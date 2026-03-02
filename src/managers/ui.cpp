@@ -895,20 +895,42 @@ static void format_weather_condition(const char* raw, char* out, size_t out_len)
 
 static const uint8_t* ui_weather_icon_for_condition(const char* condition) {
     if (!condition || condition[0] == '\0') {
-        return home_outline;
+        return weather_partly_cloudy;
     }
-    if (contains_case_insensitive(condition, "sun") || contains_case_insensitive(condition, "clear")) {
-        return climate_mode_heat;
+
+    if (contains_case_insensitive(condition, "clear-night") || contains_case_insensitive(condition, "night")) {
+        return weather_night;
     }
-    if (contains_case_insensitive(condition, "rain") || contains_case_insensitive(condition, "storm") ||
-        contains_case_insensitive(condition, "snow") || contains_case_insensitive(condition, "cloud") ||
-        contains_case_insensitive(condition, "fog")) {
-        return climate_mode_cool;
+    if (contains_case_insensitive(condition, "sunny") || contains_case_insensitive(condition, "clear")) {
+        return weather_sunny;
+    }
+    if (contains_case_insensitive(condition, "partly")) {
+        return weather_partly_cloudy;
+    }
+    if (contains_case_insensitive(condition, "cloud")) {
+        return weather_cloudy;
+    }
+    if (contains_case_insensitive(condition, "lightning") || contains_case_insensitive(condition, "thunder")) {
+        return weather_lightning_rainy;
+    }
+    if (contains_case_insensitive(condition, "pour")) {
+        return weather_pouring;
+    }
+    if (contains_case_insensitive(condition, "rain") || contains_case_insensitive(condition, "drizzle")) {
+        return weather_rainy;
+    }
+    if (contains_case_insensitive(condition, "snow") || contains_case_insensitive(condition, "sleet") ||
+        contains_case_insensitive(condition, "hail")) {
+        return weather_snowy;
+    }
+    if (contains_case_insensitive(condition, "fog") || contains_case_insensitive(condition, "mist") ||
+        contains_case_insensitive(condition, "haze")) {
+        return weather_fog;
     }
     if (contains_case_insensitive(condition, "wind")) {
-        return fan;
+        return weather_windy;
     }
-    return home_outline;
+    return weather_cloudy;
 }
 
 static void ui_draw_centered_text(FASTEPD* epaper, int16_t center_x, int16_t baseline_y, const char* text, bool reinforce = false) {
@@ -1036,9 +1058,6 @@ void ui_draw_standby(FASTEPD* epaper, const StandbySnapshot* snapshot) {
     epaper->setFont(Montserrat_Regular_26);
     truncate_with_ellipsis(epaper, condition_line, sizeof(condition_line), card_w - 240);
     draw_text_at(epaper, card_x + 106, STANDBY_WEATHER_Y + 92, condition_line, true);
-
-    epaper->setFont(Montserrat_Regular_20);
-    draw_text_at(epaper, card_x + 106, STANDBY_WEATHER_Y + 126, "Forecast Home");
 
     char now_temp[20];
     char hi_temp[20];
