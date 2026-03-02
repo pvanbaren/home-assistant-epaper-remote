@@ -165,6 +165,9 @@ static bool parse_state_float(cJSON* state_item, float* out_value) {
     }
 
     const char* value = state_item->valuestring;
+    while (*value != '\0' && isspace(static_cast<unsigned char>(*value))) {
+        value++;
+    }
     if (strcmp(value, "unknown") == 0 || strcmp(value, "unavailable") == 0 || strcmp(value, "none") == 0 ||
         strcmp(value, "None") == 0) {
         return false;
@@ -172,12 +175,56 @@ static bool parse_state_float(cJSON* state_item, float* out_value) {
 
     char* end = nullptr;
     float parsed = strtof(value, &end);
-    if (end == value || (end && *end != '\0')) {
+    if (end == value) {
+        return false;
+    }
+
+    while (end && *end != '\0' && isspace(static_cast<unsigned char>(*end))) {
+        end++;
+    }
+    if (end && *end == '%') {
+        end++;
+        while (end && *end != '\0' && isspace(static_cast<unsigned char>(*end))) {
+            end++;
+        }
+    }
+    if (end && *end != '\0') {
         return false;
     }
 
     *out_value = parsed;
     return true;
+}
+
+static bool parse_standby_soc_attribute(cJSON* attributes, const char* key, float* out_value) {
+    if (!cJSON_IsObject(attributes) || !key || !out_value) {
+        return false;
+    }
+    cJSON* item = cJSON_GetObjectItem(attributes, key);
+    return parse_state_float(item, out_value);
+}
+
+static bool parse_standby_battery_soc_from_attributes(cJSON* entity_item, float* out_value) {
+    if (!cJSON_IsObject(entity_item) || !out_value) {
+        return false;
+    }
+
+    cJSON* attributes = cJSON_GetObjectItem(entity_item, "a");
+    if (!cJSON_IsObject(attributes)) {
+        attributes = cJSON_GetObjectItem(entity_item, "attributes");
+    }
+    if (!cJSON_IsObject(attributes)) {
+        return false;
+    }
+
+    const char* soc_keys[] = {"battery_level", "state_of_charge", "soc", "percentage", "battery"};
+    for (size_t idx = 0; idx < sizeof(soc_keys) / sizeof(soc_keys[0]); idx++) {
+        if (parse_standby_soc_attribute(attributes, soc_keys[idx], out_value)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static void standby_energy_series_reset(home_assistant_context_t::StandbyEnergySeries* series) {
@@ -435,14 +482,16 @@ static void hass_reset_discovery_state(home_assistant_context_t* hass) {
     copy_optional_entity_id(hass->standby_energy_solar_entity_id, sizeof(hass->standby_energy_solar_entity_id),
                             hass->config->energy_solar_entity_id);
     copy_optional_entity_id(hass->standby_energy_grid_entity_id, sizeof(hass->standby_energy_grid_entity_id), hass->config->energy_grid_entity_id);
+    copy_optional_entity_id(hass->standby_energy_grid_export_entity_id, sizeof(hass->standby_energy_grid_export_entity_id),
+                            hass->config->energy_grid_export_entity_id);
     copy_optional_entity_id(hass->standby_energy_battery_usage_entity_id, sizeof(hass->standby_energy_battery_usage_entity_id),
                             hass->config->energy_battery_usage_entity_id);
+    copy_optional_entity_id(hass->standby_energy_battery_charge_entity_id, sizeof(hass->standby_energy_battery_charge_entity_id),
+                            hass->config->energy_battery_charge_entity_id);
     copy_optional_entity_id(hass->standby_energy_battery_soc_entity_id, sizeof(hass->standby_energy_battery_soc_entity_id),
                             hass->config->energy_battery_soc_entity_id);
     copy_optional_entity_id(hass->standby_energy_house_entity_id, sizeof(hass->standby_energy_house_entity_id),
                             hass->config->energy_house_entity_id);
-    hass->standby_energy_grid_export_entity_id[0] = '\0';
-    hass->standby_energy_battery_charge_entity_id[0] = '\0';
     hass->energy_prefs_request_id = 0;
     hass->standby_energy_house_computed = false;
     standby_energy_series_reset(&hass->standby_solar_series);
@@ -452,7 +501,9 @@ static void hass_reset_discovery_state(home_assistant_context_t* hass) {
     standby_energy_series_reset(&hass->standby_battery_in_series);
     standby_energy_series_add_entity(&hass->standby_solar_series, hass->standby_energy_solar_entity_id);
     standby_energy_series_add_entity(&hass->standby_grid_in_series, hass->standby_energy_grid_entity_id);
+    standby_energy_series_add_entity(&hass->standby_grid_out_series, hass->standby_energy_grid_export_entity_id);
     standby_energy_series_add_entity(&hass->standby_battery_out_series, hass->standby_energy_battery_usage_entity_id);
+    standby_energy_series_add_entity(&hass->standby_battery_in_series, hass->standby_energy_battery_charge_entity_id);
     hass->weather_forecast_request_id = 0;
     hass->weather_forecast_requested = false;
     hass->last_weather_forecast_request_ms = 0;
@@ -954,8 +1005,19 @@ static void hass_parse_standby_entity_update(home_assistant_context_t* hass, con
         return;
     }
 
+    cJSON* state_item = cJSON_GetObjectItem(item, "s");
+    const bool has_state_update = state_item != nullptr;
     float value = 0.0f;
-    bool valid = parse_state_float(cJSON_GetObjectItem(item, "s"), &value);
+    bool valid = parse_state_float(state_item, &value);
+    if (is_battery_soc && !valid) {
+        valid = parse_standby_battery_soc_from_attributes(item, &value);
+    }
+
+    // Home Assistant can send partial entity updates that only contain attributes.
+    // If there is no numeric state update at all, keep previous values unchanged.
+    if (!has_state_update && !(is_battery_soc && valid)) {
+        return;
+    }
     xSemaphoreTake(hass->mutex, portMAX_DELAY);
     if (solar_idx >= 0) {
         series_changed = standby_energy_series_set_value(&hass->standby_solar_series, solar_idx, valid, value) || series_changed;
@@ -979,6 +1041,7 @@ static void hass_parse_standby_entity_update(home_assistant_context_t* hass, con
     }
 
     if (is_battery_soc) {
+        ESP_LOGI(TAG, "Standby battery SoC update: valid=%d value=%.1f", valid ? 1 : 0, value);
         store_set_standby_energy_metric(hass->store, StandbyEnergyMetric::BatteryCharge, valid, value);
     } else if (is_house_direct && !house_computed) {
         store_set_standby_energy_metric(hass->store, StandbyEnergyMetric::HouseUsage, valid, value);
@@ -1063,39 +1126,60 @@ static void hass_apply_energy_preferences(home_assistant_context_t* hass,
                                           const home_assistant_context_t::StandbyEnergySeries* grid_out_series,
                                           const home_assistant_context_t::StandbyEnergySeries* battery_out_series,
                                           const home_assistant_context_t::StandbyEnergySeries* battery_in_series) {
+    const bool solar_configured = has_entity_id(hass->config->energy_solar_entity_id);
+    const bool grid_in_configured = has_entity_id(hass->config->energy_grid_entity_id);
+    const bool grid_out_configured = has_entity_id(hass->config->energy_grid_export_entity_id);
+    const bool battery_out_configured = has_entity_id(hass->config->energy_battery_usage_entity_id);
+    const bool battery_in_configured = has_entity_id(hass->config->energy_battery_charge_entity_id);
+    const bool house_configured = has_entity_id(hass->config->energy_house_entity_id);
+
     xSemaphoreTake(hass->mutex, portMAX_DELAY);
-    hass->standby_solar_series = *solar_series;
-    hass->standby_grid_in_series = *grid_in_series;
-    hass->standby_grid_out_series = *grid_out_series;
-    hass->standby_battery_out_series = *battery_out_series;
-    hass->standby_battery_in_series = *battery_in_series;
+    if (!solar_configured) {
+        hass->standby_solar_series = *solar_series;
+    }
+    if (!grid_in_configured) {
+        hass->standby_grid_in_series = *grid_in_series;
+    }
+    if (!grid_out_configured) {
+        hass->standby_grid_out_series = *grid_out_series;
+    }
+    if (!battery_out_configured) {
+        hass->standby_battery_out_series = *battery_out_series;
+    }
+    if (!battery_in_configured) {
+        hass->standby_battery_in_series = *battery_in_series;
+    }
 
     const bool has_discovered_sources = hass->standby_solar_series.count > 0 || hass->standby_grid_in_series.count > 0 ||
                                         hass->standby_grid_out_series.count > 0 || hass->standby_battery_out_series.count > 0 ||
                                         hass->standby_battery_in_series.count > 0;
-    hass->standby_energy_house_computed = has_discovered_sources;
+    hass->standby_energy_house_computed = has_discovered_sources && !house_configured;
 
-    if (hass->standby_solar_series.count > 0) {
+    if (!solar_configured && hass->standby_solar_series.count > 0) {
         copy_string(hass->standby_energy_solar_entity_id, sizeof(hass->standby_energy_solar_entity_id), hass->standby_solar_series.entity_ids[0]);
     }
-    if (hass->standby_grid_in_series.count > 0) {
+    if (!grid_in_configured && hass->standby_grid_in_series.count > 0) {
         copy_string(hass->standby_energy_grid_entity_id, sizeof(hass->standby_energy_grid_entity_id), hass->standby_grid_in_series.entity_ids[0]);
     }
-    if (hass->standby_battery_out_series.count > 0) {
+    if (!battery_out_configured && hass->standby_battery_out_series.count > 0) {
         copy_string(hass->standby_energy_battery_usage_entity_id, sizeof(hass->standby_energy_battery_usage_entity_id),
                     hass->standby_battery_out_series.entity_ids[0]);
     }
-    if (hass->standby_grid_out_series.count > 0) {
+    if (!grid_out_configured && hass->standby_grid_out_series.count > 0) {
         copy_string(hass->standby_energy_grid_export_entity_id, sizeof(hass->standby_energy_grid_export_entity_id),
                     hass->standby_grid_out_series.entity_ids[0]);
     } else {
-        hass->standby_energy_grid_export_entity_id[0] = '\0';
+        if (!grid_out_configured) {
+            hass->standby_energy_grid_export_entity_id[0] = '\0';
+        }
     }
-    if (hass->standby_battery_in_series.count > 0) {
+    if (!battery_in_configured && hass->standby_battery_in_series.count > 0) {
         copy_string(hass->standby_energy_battery_charge_entity_id, sizeof(hass->standby_energy_battery_charge_entity_id),
                     hass->standby_battery_in_series.entity_ids[0]);
     } else {
-        hass->standby_energy_battery_charge_entity_id[0] = '\0';
+        if (!battery_in_configured) {
+            hass->standby_energy_battery_charge_entity_id[0] = '\0';
+        }
     }
     xSemaphoreGive(hass->mutex);
 
@@ -1113,6 +1197,24 @@ static void hass_apply_energy_preferences(home_assistant_context_t* hass,
     }
     if (battery_in_series->count > 0) {
         ESP_LOGI(TAG, "Energy source (battery in): %s", battery_in_series->entity_ids[0]);
+    }
+    if (hass->standby_solar_series.count > 0) {
+        ESP_LOGI(TAG, "Standby metric (solar): %s", hass->standby_solar_series.entity_ids[0]);
+    }
+    if (hass->standby_grid_in_series.count > 0) {
+        ESP_LOGI(TAG, "Standby metric (grid in): %s", hass->standby_grid_in_series.entity_ids[0]);
+    }
+    if (hass->standby_grid_out_series.count > 0) {
+        ESP_LOGI(TAG, "Standby metric (grid out): %s", hass->standby_grid_out_series.entity_ids[0]);
+    }
+    if (hass->standby_battery_out_series.count > 0) {
+        ESP_LOGI(TAG, "Standby metric (battery out): %s", hass->standby_battery_out_series.entity_ids[0]);
+    }
+    if (hass->standby_battery_in_series.count > 0) {
+        ESP_LOGI(TAG, "Standby metric (battery in): %s", hass->standby_battery_in_series.entity_ids[0]);
+    }
+    if (has_entity_id(hass->standby_energy_house_entity_id) && !hass->standby_energy_house_computed) {
+        ESP_LOGI(TAG, "Standby metric (house direct): %s", hass->standby_energy_house_entity_id);
     }
 
     hass_update_standby_energy_metrics(hass);
@@ -1827,6 +1929,17 @@ static void hass_send_call_service(home_assistant_context_t* hass, const char* d
     cJSON_Delete(root);
 }
 
+static void hass_refresh_standby_battery_soc(home_assistant_context_t* hass) {
+    if (!has_entity_id(hass->standby_energy_battery_soc_entity_id)) {
+        ESP_LOGW(TAG, "Standby battery SoC entity is not configured/discovered");
+        return;
+    }
+
+    cJSON* service_data = cJSON_CreateObject();
+    cJSON_AddStringToObject(service_data, "entity_id", hass->standby_energy_battery_soc_entity_id);
+    hass_send_call_service(hass, "homeassistant", "update_entity", service_data);
+}
+
 static const char* climate_mode_service_value(ClimateMode mode) {
     switch (mode) {
     case ClimateMode::Heat:
@@ -1840,9 +1953,11 @@ static const char* climate_mode_service_value(ClimateMode mode) {
 }
 
 void hass_send_command(home_assistant_context_t* hass, Command* cmd) {
-    xSemaphoreTake(hass->mutex, portMAX_DELAY);
-    hass->last_command_sent_at_ms[cmd->entity_idx] = xTaskGetTickCount();
-    xSemaphoreGive(hass->mutex);
+    if (cmd->entity_idx < MAX_ENTITIES) {
+        xSemaphoreTake(hass->mutex, portMAX_DELAY);
+        hass->last_command_sent_at_ms[cmd->entity_idx] = xTaskGetTickCount();
+        xSemaphoreGive(hass->mutex);
+    }
 
     switch (cmd->type) {
     case CommandType::SetLightBrightnessPercentage: {
@@ -1898,6 +2013,9 @@ void hass_send_command(home_assistant_context_t* hass, Command* cmd) {
         hass_send_call_service(hass, "automation", cmd->value == 0 ? "turn_off" : "turn_on", service_data);
         break;
     }
+    case CommandType::RefreshStandbyBatterySoc:
+        hass_refresh_standby_battery_soc(hass);
+        break;
     default:
         ESP_LOGI(TAG, "Service type not supported");
         break;

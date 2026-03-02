@@ -16,7 +16,7 @@
 
 static const char* TAG = "ui";
 static const char* const TEXT_BOOT[] = {"Home Assistant", "e-paper remote", nullptr};
-static const char* const TEXT_WIFI_DISCONNECTED[] = {"Not connected", "to Wifi", "Tap to open Wi-Fi settings", nullptr};
+static const char* const TEXT_WIFI_DISCONNECTED[] = {"Not connected", "to Wi-Fi", nullptr};
 static const char* const TEXT_HASS_DISCONNECTED[] = {"Not connected", "to Home Assistant", nullptr};
 static const char* const TEXT_HASS_INVALID_KEY[] = {"Cannot connect", "to Home Assistant:", "invalid token", nullptr};
 static const char* const TEXT_GENERIC_ERROR[] = {"Unknown error", nullptr};
@@ -121,34 +121,6 @@ void ui_room_controls_draw_widgets(UIState* state, BitDepth depth, Screen* scree
     }
 }
 
-void ui_show_message(UiMode mode, FASTEPD* epaper) {
-    const uint8_t* icon = alert_circle;
-    const char* const* text_lines = TEXT_GENERIC_ERROR;
-
-    switch (mode) {
-    case UiMode::Boot:
-        icon = home_assistant;
-        text_lines = TEXT_BOOT;
-        break;
-    case UiMode::WifiDisconnected:
-        icon = wifi_off;
-        text_lines = TEXT_WIFI_DISCONNECTED;
-        break;
-    case UiMode::HassDisconnected:
-        icon = server_network_off;
-        text_lines = TEXT_HASS_DISCONNECTED;
-        break;
-    case UiMode::HassInvalidKey:
-        icon = lock_alert_outline;
-        text_lines = TEXT_HASS_INVALID_KEY;
-        break;
-    default:
-        break;
-    }
-
-    drawCenteredIconWithText(epaper, icon, text_lines, 30, 100);
-}
-
 static void set_room_list_font(FASTEPD* epaper, uint8_t font_idx) {
     switch (font_idx) {
     case 0:
@@ -176,6 +148,64 @@ static void draw_text_at(FASTEPD* epaper, int16_t x, int16_t y, const char* text
         epaper->setCursor(x + 1, y);
         epaper->write(text);
     }
+}
+
+static void ui_draw_connection_recovery_buttons(FASTEPD* epaper) {
+    BB_RECT rect;
+    epaper->setFont(Montserrat_Regular_20);
+
+    // Retry button (filled)
+    epaper->fillRoundRect(WIFI_DISC_RETRY_X, WIFI_DISC_BUTTON_Y, WIFI_DISC_RETRY_W, WIFI_DISC_BUTTON_H, 12, BBEP_BLACK);
+    epaper->setTextColor(0xf);
+    const char* retry_label = "Retry";
+    epaper->getStringBox(retry_label, &rect);
+    draw_text_at(epaper, WIFI_DISC_RETRY_X + (WIFI_DISC_RETRY_W - rect.w) / 2,
+                 WIFI_DISC_BUTTON_Y + (WIFI_DISC_BUTTON_H - rect.h) / 2, retry_label);
+
+    // Wi-Fi Settings button (outlined)
+    epaper->fillRoundRect(WIFI_DISC_SETTINGS_X, WIFI_DISC_BUTTON_Y, WIFI_DISC_SETTINGS_W, WIFI_DISC_BUTTON_H, 12, 0xf);
+    epaper->drawRoundRect(WIFI_DISC_SETTINGS_X, WIFI_DISC_BUTTON_Y, WIFI_DISC_SETTINGS_W, WIFI_DISC_BUTTON_H, 12, BBEP_BLACK);
+    epaper->setTextColor(BBEP_BLACK);
+    const char* settings_label = "Wi-Fi Settings";
+    epaper->getStringBox(settings_label, &rect);
+    draw_text_at(epaper, WIFI_DISC_SETTINGS_X + (WIFI_DISC_SETTINGS_W - rect.w) / 2,
+                 WIFI_DISC_BUTTON_Y + (WIFI_DISC_BUTTON_H - rect.h) / 2, settings_label);
+}
+
+static void ui_draw_wifi_disconnected(FASTEPD* epaper) {
+    drawCenteredIconWithText(epaper, wifi_off, TEXT_WIFI_DISCONNECTED, 30, 100);
+    ui_draw_connection_recovery_buttons(epaper);
+}
+
+static void ui_draw_hass_disconnected(FASTEPD* epaper) {
+    drawCenteredIconWithText(epaper, server_network_off, TEXT_HASS_DISCONNECTED, 30, 100);
+    ui_draw_connection_recovery_buttons(epaper);
+}
+
+void ui_show_message(UiMode mode, FASTEPD* epaper) {
+    const uint8_t* icon = alert_circle;
+    const char* const* text_lines = TEXT_GENERIC_ERROR;
+
+    switch (mode) {
+    case UiMode::Boot:
+        icon = home_assistant;
+        text_lines = TEXT_BOOT;
+        break;
+    case UiMode::WifiDisconnected:
+        ui_draw_wifi_disconnected(epaper);
+        return;
+    case UiMode::HassDisconnected:
+        ui_draw_hass_disconnected(epaper);
+        return;
+    case UiMode::HassInvalidKey:
+        icon = lock_alert_outline;
+        text_lines = TEXT_HASS_INVALID_KEY;
+        break;
+    default:
+        break;
+    }
+
+    drawCenteredIconWithText(epaper, icon, text_lines, 30, 100);
 }
 
 static void ui_copy_string(char* dst, size_t dst_len, const char* src) {
@@ -647,7 +677,7 @@ void ui_draw_settings_menu(FASTEPD* epaper) {
 }
 
 static void ui_draw_wifi_network_row(FASTEPD* epaper, int16_t x, int16_t y, int16_t w, const WifiNetwork& network, bool connected) {
-    epaper->fillRoundRect(x, y, w, WIFI_NETWORK_ROW_H, 12, connected ? 0xe : 0xf);
+    epaper->fillRoundRect(x, y, w, WIFI_NETWORK_ROW_H, 12, (connected || network.known) ? 0xe : 0xf);
     epaper->drawRoundRect(x, y, w, WIFI_NETWORK_ROW_H, 12, BBEP_BLACK);
 
     epaper->setFont(Montserrat_Regular_16);
@@ -657,8 +687,18 @@ static void ui_draw_wifi_network_row(FASTEPD* epaper, int16_t x, int16_t y, int1
     truncate_with_ellipsis(epaper, ssid, sizeof(ssid), static_cast<int16_t>(w - 190));
     draw_text_at(epaper, x + 16, y + 25, ssid);
 
+    const char* status;
+    if (connected) {
+        status = "CONN";
+    } else if (network.known) {
+        status = "SAVED";
+    } else if (network.secure) {
+        status = "LOCK";
+    } else {
+        status = "OPEN";
+    }
     char right_text[40];
-    snprintf(right_text, sizeof(right_text), "%s  %ddBm", network.secure ? "LOCK" : "OPEN", static_cast<int>(network.rssi));
+    snprintf(right_text, sizeof(right_text), "%s  %ddBm", status, static_cast<int>(network.rssi));
     BB_RECT right_rect = get_text_box(epaper, right_text);
     draw_text_at(epaper, x + w - right_rect.w - 14, y + 25, right_text);
 }
@@ -766,18 +806,8 @@ void ui_draw_wifi_password(FASTEPD* epaper, const WifiPasswordSnapshot* snapshot
     snprintf(ssid_line, sizeof(ssid_line), "Network: %s", snapshot->target_ssid);
     draw_text_at(epaper, WIFI_PASSWORD_BOX_X + 14, WIFI_PASSWORD_BOX_Y + 28, ssid_line);
 
-    char masked[MAX_WIFI_PASSWORD_LEN + 1];
-    size_t pass_len = strlen(snapshot->password);
-    if (pass_len > MAX_WIFI_PASSWORD_LEN) {
-        pass_len = MAX_WIFI_PASSWORD_LEN;
-    }
-    for (size_t i = 0; i < pass_len; i++) {
-        masked[i] = '*';
-    }
-    masked[pass_len] = '\0';
-
     char pass_line[MAX_WIFI_PASSWORD_LEN + 20];
-    snprintf(pass_line, sizeof(pass_line), "Password: %s", masked);
+    snprintf(pass_line, sizeof(pass_line), "Password: %s", snapshot->password);
     truncate_with_ellipsis(epaper, pass_line, sizeof(pass_line), static_cast<int16_t>(WIFI_PASSWORD_BOX_W - 24));
     draw_text_at(epaper, WIFI_PASSWORD_BOX_X + 14, WIFI_PASSWORD_BOX_Y + 58, pass_line);
     draw_text_at(epaper, WIFI_PASSWORD_BOX_X + 14, WIFI_PASSWORD_BOX_Y + 88, snapshot->connecting ? "Connecting..." : "Tap Connect when ready");
@@ -886,6 +916,56 @@ static void ui_draw_centered_text(FASTEPD* epaper, int16_t center_x, int16_t bas
     draw_text_at(epaper, center_x - rect.w / 2, baseline_y, text, reinforce);
 }
 
+enum class EnergyFlowIcon : uint8_t {
+    None = 0,
+    In = 1,
+    Out = 2,
+};
+
+static void ui_draw_energy_flow_icon(FASTEPD* epaper, int16_t center_x, int16_t baseline_y, EnergyFlowIcon icon) {
+    if (icon == EnergyFlowIcon::None) {
+        return;
+    }
+
+    const bool is_in = icon == EnergyFlowIcon::In;
+    const int16_t center_y = baseline_y - 6;
+    const int16_t tail_y = is_in ? center_y - 4 : center_y + 4;
+    const int16_t tip_y = is_in ? center_y + 4 : center_y - 4;
+    const int16_t wing_y1 = is_in ? tip_y - 3 : tip_y + 3;
+    const int16_t wing_y2 = is_in ? tip_y - 1 : tip_y + 1;
+
+    for (int8_t t = -1; t <= 1; t++) {
+        epaper->drawLine(center_x + t, tail_y, center_x + t, tip_y, BBEP_BLACK);
+        epaper->drawLine(center_x + t, tip_y, center_x - 3 + t, wing_y1, BBEP_BLACK);
+        epaper->drawLine(center_x + t, tip_y, center_x + 3 + t, wing_y1, BBEP_BLACK);
+        epaper->drawLine(center_x + t, tip_y, center_x - 2 + t, wing_y2, BBEP_BLACK);
+        epaper->drawLine(center_x + t, tip_y, center_x + 2 + t, wing_y2, BBEP_BLACK);
+    }
+}
+
+static void ui_draw_centered_energy_value_line(FASTEPD* epaper,
+                                               int16_t center_x,
+                                               int16_t baseline_y,
+                                               const char* text,
+                                               EnergyFlowIcon icon,
+                                               bool reinforce = false) {
+    if (icon == EnergyFlowIcon::None) {
+        ui_draw_centered_text(epaper, center_x, baseline_y, text, reinforce);
+        return;
+    }
+
+    BB_RECT rect = get_text_box(epaper, text);
+    const int16_t icon_w = 10;
+    const int16_t gap = 6;
+    const int16_t total_w = static_cast<int16_t>(icon_w + gap + rect.w);
+    const int16_t start_x = center_x - total_w / 2;
+    const int16_t icon_cx = start_x + icon_w / 2;
+    const int16_t text_x = start_x + icon_w + gap;
+
+    ui_draw_energy_flow_icon(epaper, icon_cx, baseline_y, icon);
+    draw_text_at(epaper, text_x, baseline_y, text, reinforce);
+}
+
 static void format_temperature_text(char* out, size_t out_len, bool valid, float value, bool include_unit = false) {
     if (!valid) {
         snprintf(out, out_len, "--");
@@ -907,11 +987,11 @@ static void format_energy_text(char* out, size_t out_len, bool valid, float valu
     }
     const float abs_value = std::fabs(value);
     if (abs_value >= 100.0f) {
-        snprintf(out, out_len, include_unit ? "%.0fkWh" : "%.0f", value);
+        snprintf(out, out_len, include_unit ? "%.0f kWh" : "%.0f", value);
     } else if (abs_value >= 10.0f) {
-        snprintf(out, out_len, include_unit ? "%.1fkWh" : "%.1f", value);
+        snprintf(out, out_len, include_unit ? "%.1f kWh" : "%.1f", value);
     } else {
-        snprintf(out, out_len, include_unit ? "%.1fkWh" : "%.1f", value);
+        snprintf(out, out_len, include_unit ? "%.1f kWh" : "%.1f", value);
     }
 }
 
@@ -928,17 +1008,13 @@ static void ui_draw_energy_node(FASTEPD* epaper,
                                 int16_t center_x,
                                 int16_t center_y,
                                 int16_t radius,
-                                const uint8_t* icon,
-                                const char* label) {
+                                const uint8_t* icon) {
     epaper->fillCircle(center_x, center_y, radius, BBEP_BLACK);
     epaper->fillCircle(center_x, center_y, radius - 3, 0xf);
 
     if (icon) {
-        epaper->loadBMP(icon, center_x - 28, center_y - radius + 10, 0xf, BBEP_BLACK);
+        epaper->loadBMP(icon, center_x - 32, center_y - 32, 0xf, BBEP_BLACK);
     }
-
-    epaper->setFont(Montserrat_Regular_16);
-    ui_draw_centered_text(epaper, center_x, center_y - 2, label, true);
 }
 
 void ui_draw_standby(FASTEPD* epaper, const StandbySnapshot* snapshot) {
@@ -1015,14 +1091,14 @@ void ui_draw_standby(FASTEPD* epaper, const StandbySnapshot* snapshot) {
 
     const int16_t energy_bottom = STANDBY_ENERGY_Y + STANDBY_ENERGY_H;
     const int16_t solar_cx = card_x + card_w / 2;
-    const int16_t solar_cy = STANDBY_ENERGY_Y + 94;
-    const int16_t grid_cx = card_x + 88;
-    const int16_t grid_cy = STANDBY_ENERGY_Y + 262;
-    const int16_t home_cx = card_x + card_w - 88;
+    const int16_t solar_cy = STANDBY_ENERGY_Y + STANDBY_ENERGY_SOLAR_OFFSET_Y;
+    const int16_t grid_cx = card_x + STANDBY_ENERGY_SIDE_NODE_OFFSET_X;
+    const int16_t grid_cy = STANDBY_ENERGY_Y + STANDBY_ENERGY_GRID_OFFSET_Y;
+    const int16_t home_cx = card_x + card_w - STANDBY_ENERGY_SIDE_NODE_OFFSET_X;
     const int16_t home_cy = grid_cy;
     const int16_t battery_cx = solar_cx;
-    const int16_t battery_cy = energy_bottom - 132;
-    const int16_t node_r = 60;
+    const int16_t battery_cy = energy_bottom - STANDBY_ENERGY_BATTERY_BOTTOM_OFFSET;
+    const int16_t node_r = STANDBY_ENERGY_NODE_RADIUS;
 
     char solar_value[24];
     char home_value[24];
@@ -1031,41 +1107,37 @@ void ui_draw_standby(FASTEPD* epaper, const StandbySnapshot* snapshot) {
     char battery_out_value[24];
     char battery_in_value[24];
     char battery_soc_value[24];
-    format_energy_text(solar_value, sizeof(solar_value), snapshot->solar_generation_valid, snapshot->solar_generation_kwh, false);
-    format_energy_text(home_value, sizeof(home_value), snapshot->house_usage_valid, snapshot->house_usage_kwh, false);
-    format_energy_text(grid_in_value, sizeof(grid_in_value), snapshot->grid_input_valid, snapshot->grid_input_kwh, false);
-    format_energy_text(grid_out_value, sizeof(grid_out_value), snapshot->grid_export_valid, snapshot->grid_export_kwh, false);
-    format_energy_text(battery_out_value, sizeof(battery_out_value), snapshot->battery_usage_valid, snapshot->battery_usage_kwh, false);
-    format_energy_text(battery_in_value, sizeof(battery_in_value), snapshot->battery_charge_energy_valid, snapshot->battery_charge_energy_kwh, false);
+    format_energy_text(solar_value, sizeof(solar_value), snapshot->solar_generation_valid, snapshot->solar_generation_kwh, true);
+    format_energy_text(home_value, sizeof(home_value), snapshot->house_usage_valid, snapshot->house_usage_kwh, true);
+    format_energy_text(grid_in_value, sizeof(grid_in_value), snapshot->grid_input_valid, snapshot->grid_input_kwh, true);
+    format_energy_text(grid_out_value, sizeof(grid_out_value), snapshot->grid_export_valid, snapshot->grid_export_kwh, true);
+    format_energy_text(battery_out_value, sizeof(battery_out_value), snapshot->battery_usage_valid, snapshot->battery_usage_kwh, true);
+    format_energy_text(battery_in_value, sizeof(battery_in_value), snapshot->battery_charge_energy_valid, snapshot->battery_charge_energy_kwh, true);
     format_percent_text(battery_soc_value, sizeof(battery_soc_value), snapshot->battery_charge_valid, snapshot->battery_charge_pct);
 
-    char grid_line1[32];
-    char grid_line2[32];
-    char battery_line1[32];
     char battery_line2[32];
-    snprintf(grid_line1, sizeof(grid_line1), "In %s", grid_in_value);
-    snprintf(grid_line2, sizeof(grid_line2), "Out %s", grid_out_value);
-    snprintf(battery_line1, sizeof(battery_line1), "Out %s", battery_out_value);
-    if (snapshot->battery_charge_valid) {
-        snprintf(battery_line2, sizeof(battery_line2), "SoC %s%%", battery_soc_value);
-    } else {
-        snprintf(battery_line2, sizeof(battery_line2), "In %s", battery_in_value);
-    }
+    snprintf(battery_line2, sizeof(battery_line2), "SoC %s%%", battery_soc_value);
 
-    ui_draw_energy_node(epaper, solar_cx, solar_cy, node_r, climate_mode_heat, "Solar");
-    ui_draw_energy_node(epaper, home_cx, home_cy, node_r, home_outline, "Home");
-    ui_draw_energy_node(epaper, grid_cx, grid_cy, node_r, office_building, "Grid");
-    ui_draw_energy_node(epaper, battery_cx, battery_cy, node_r, climate_mode_cool, "Battery");
+    ui_draw_energy_node(epaper, solar_cx, solar_cy, node_r, solar_power);
+    ui_draw_energy_node(epaper, home_cx, home_cy, node_r, home_lightning_bolt_outline);
+    ui_draw_energy_node(epaper, grid_cx, grid_cy, node_r, transmission_tower);
+    ui_draw_energy_node(epaper, battery_cx, battery_cy, node_r, battery);
 
-    const int16_t value_y = node_r + 24;
-    const int16_t value_y2 = node_r + 46;
+    const int16_t value_y = node_r + 38;
+    const int16_t value_y2 = node_r + 70;
+
     epaper->setFont(Montserrat_Regular_16);
     ui_draw_centered_text(epaper, solar_cx, solar_cy + value_y, solar_value, true);
     ui_draw_centered_text(epaper, home_cx, home_cy + value_y, home_value, true);
-    ui_draw_centered_text(epaper, grid_cx, grid_cy + value_y, grid_line1, true);
-    ui_draw_centered_text(epaper, grid_cx, grid_cy + value_y2, grid_line2, false);
-    ui_draw_centered_text(epaper, battery_cx, battery_cy + value_y, battery_line1, true);
-    ui_draw_centered_text(epaper, battery_cx, battery_cy + value_y2, battery_line2, false);
+    ui_draw_centered_energy_value_line(epaper, grid_cx, grid_cy + value_y, grid_in_value, EnergyFlowIcon::In, true);
+    ui_draw_centered_energy_value_line(epaper, grid_cx, grid_cy + value_y2, grid_out_value, EnergyFlowIcon::Out, false);
+    ui_draw_centered_energy_value_line(epaper, battery_cx, battery_cy + value_y, battery_out_value, EnergyFlowIcon::Out, true);
+    ui_draw_centered_energy_value_line(epaper,
+                                       battery_cx,
+                                       battery_cy + value_y2,
+                                       battery_line2,
+                                       EnergyFlowIcon::None,
+                                       false);
 }
 
 static uint16_t ui_room_controls_light_height_for_counts(uint8_t full_row_count, uint32_t full_row_height_total, uint8_t light_count) {

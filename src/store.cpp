@@ -335,8 +335,29 @@ void store_send_command(EntityStore* store, uint8_t entity_idx, uint8_t value) {
     notify_ui(store);
 }
 
+void store_request_standby_battery_soc_refresh(EntityStore* store) {
+    xSemaphoreTake(store->mutex, portMAX_DELAY);
+    store->standby_refresh_battery_soc_pending = true;
+    xSemaphoreGive(store->mutex);
+
+    ESP_LOGI(TAG, "Requested standby battery SoC refresh");
+
+    if (store->home_assistant_task) {
+        xTaskNotifyGive(store->home_assistant_task);
+    }
+}
+
 bool store_get_pending_command(EntityStore* store, Command* command) {
     xSemaphoreTake(store->mutex, portMAX_DELAY);
+
+    if (store->standby_refresh_battery_soc_pending) {
+        command->entity_id = nullptr;
+        command->entity_idx = UINT8_MAX;
+        command->type = CommandType::RefreshStandbyBatterySoc;
+        command->value = 0;
+        xSemaphoreGive(store->mutex);
+        return true;
+    }
 
     for (uint8_t entity_idx = 0; entity_idx < store->entity_count; ++entity_idx) {
         HomeAssistantEntity& entity = store->entities[entity_idx];
@@ -356,6 +377,17 @@ bool store_get_pending_command(EntityStore* store, Command* command) {
 
 void store_ack_pending_command(EntityStore* store, const Command* command) {
     xSemaphoreTake(store->mutex, portMAX_DELAY);
+
+    if (command->type == CommandType::RefreshStandbyBatterySoc) {
+        store->standby_refresh_battery_soc_pending = false;
+        xSemaphoreGive(store->mutex);
+        return;
+    }
+
+    if (command->entity_idx >= store->entity_count) {
+        xSemaphoreGive(store->mutex);
+        return;
+    }
 
     HomeAssistantEntity& entity = store->entities[command->entity_idx];
     if (entity.command_value == command->value) {
@@ -1064,6 +1096,7 @@ void store_set_wifi_scan_results(EntityStore* store, const WifiNetwork* networks
         copy_string(store->wifi_networks[i].ssid, sizeof(store->wifi_networks[i].ssid), networks[i].ssid);
         store->wifi_networks[i].rssi = networks[i].rssi;
         store->wifi_networks[i].secure = networks[i].secure;
+        store->wifi_networks[i].known = networks[i].known;
     }
     store->wifi_network_count = count;
     uint8_t pages = wifi_list_page_count(count);
@@ -1143,6 +1176,7 @@ void store_get_wifi_settings_snapshot(EntityStore* store, WifiSettingsSnapshot* 
         copy_string(snapshot->networks[i].ssid, sizeof(snapshot->networks[i].ssid), store->wifi_networks[i].ssid);
         snapshot->networks[i].rssi = store->wifi_networks[i].rssi;
         snapshot->networks[i].secure = store->wifi_networks[i].secure;
+        snapshot->networks[i].known = store->wifi_networks[i].known;
     }
     xSemaphoreGive(store->mutex);
 }
@@ -1469,6 +1503,7 @@ void store_wait_for_wifi_up(EntityStore* store) {
 
 void store_flush_pending_commands(EntityStore* store) {
     xSemaphoreTake(store->mutex, portMAX_DELAY);
+    store->standby_refresh_battery_soc_pending = false;
     for (uint8_t entity_idx = 0; entity_idx < store->entity_count; ++entity_idx) {
         store->entities[entity_idx].command_pending = false;
     }

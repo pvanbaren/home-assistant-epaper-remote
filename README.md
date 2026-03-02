@@ -38,6 +38,48 @@ In Home Assistant:
 
 Copy `src/config_remote.cpp.example` to `src/config_remote.cpp` then update the file accordingly.
 
+Optional standby data source fields are available in `Configuration`:
+
+- `weather_entity_id`
+- `energy_solar_entity_id`
+- `energy_grid_entity_id`
+- `energy_battery_usage_entity_id`
+- `energy_battery_soc_entity_id`
+- `energy_house_entity_id`
+
+If these are omitted, firmware will still attempt to discover usable standby sources from Home Assistant (weather entity + energy preferences).
+
+## Current UI and feature set
+
+- Home Assistant-driven navigation:
+  - Floors -> Rooms -> Room controls
+  - Rooms without a floor are grouped under `Other Areas`
+  - Floor/room lists are paged grids with horizontal swipe navigation
+- Room controls:
+  - Climate widgets (AC units only) are shown first and support `off/heat/cool` + `+/-0.5C`
+  - Cover widgets support `Up/Open` and `Down/Close`
+  - Light widgets are half-width tiles (2 per row) with dynamic sizing and room-page pagination
+- Settings:
+  - Home screen settings icon opens Settings menu
+  - Wi-Fi settings page shows status, profile, SSID, IP, RSSI, scan results, and default-profile reset
+  - On-screen Wi-Fi password entry for secure networks
+  - Standby screen debug entry (`Standby Screen` tile)
+- Standby mode:
+  - Auto-activates after inactivity timeout
+  - Tap anywhere returns to home
+  - Displays weather forecast and daily energy summary
+  - Refreshes on an hourly cadence while active
+- Hardware home button:
+  - Front button support on Lilygo T5 E-Paper S3 Pro (via touch controller key callback)
+  - Returns to root home (floor list)
+
+## Wi-Fi behavior notes
+
+- If the startup/default Wi-Fi cannot be reached, firmware automatically opens Wi-Fi settings after a short timeout so another network can be selected.
+- Wi-Fi scans run from the settings page and populate a paged network list.
+- Custom Wi-Fi profile (SSID/password) is saved in NVS and can be reset to default from Wi-Fi settings.
+- If upload fails with a busy serial port, close any active monitor process before flashing again.
+
 ## PlatformIO command quick reference
 
 Run commands from the project root.
@@ -101,6 +143,14 @@ pio run -e m5-papers3 -t monitor
 
 ## Notes
 
+### Continuous Integration
+
+- GitHub Actions workflow: `.github/workflows/platformio-build.yml`
+- Runs on push to `main`, pull requests, and manual dispatch
+- Builds both PlatformIO environments:
+  - `lilygo-t5-s3`
+  - `m5-papers3`
+
 ### Getting more logs
 
 To get some logs from the serial port, uncomment the following line from `platformio.ini`:
@@ -125,5 +175,3 @@ This repository contains resources from:
 
 - https://github.com/Templarian/MaterialDesign (SIL OPEN FONT LICENSE Version 1.1)
 - https://github.com/JulietaUla/Montserrat (Apache License 2.0)
-
-

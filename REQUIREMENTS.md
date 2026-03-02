@@ -16,7 +16,9 @@ It should be fast to navigate, reliable for daily use, and simple to understand.
 
 - Lilygo T5 E-Paper S3 Pro
 - M5Paper S3
-- Firmware built and flashed via PlatformIO (`lilygo-t5-s3` environment)
+- Firmware built and flashed via PlatformIO environments:
+  - `lilygo-t5-s3`
+  - `m5-papers3`
 
 ## 4. Functional Requirements
 
@@ -38,6 +40,10 @@ It should be fast to navigate, reliable for daily use, and simple to understand.
   - Wi-Fi disconnected
   - Home Assistant disconnected
   - Invalid Home Assistant token
+  - Settings menu
+  - Wi-Fi settings
+  - Wi-Fi password entry
+  - Standby
   - Floor list
   - Room list
   - Room controls
@@ -160,11 +166,58 @@ It should be fast to navigate, reliable for daily use, and simple to understand.
   - Cover partial redraw should update only the up/down control regions when state changes.
 - Touch release timeout must be reduced to improve perceived responsiveness for taps and swipe completion.
 
+### 4.14 Settings and Wi-Fi Management
+
+- The floor-list home screen must expose a settings entry point via icon button.
+- Settings menu must provide:
+  - Wi-Fi settings entry
+  - Standby screen debug entry ("open now" behavior)
+- Wi-Fi settings view must show:
+  - Connection state
+  - Active profile (default vs custom)
+  - Connected SSID
+  - IP address
+  - RSSI/signal quality
+  - Current error/status line
+  - Nearby network list with security state and RSSI
+- Wi-Fi settings interactions must support:
+  - Trigger scan
+  - Select open networks directly
+  - Select secure networks and enter password via on-screen keyboard
+  - Reset from custom profile back to default configured profile
+- Custom Wi-Fi credentials must persist across reboots.
+- If startup/default Wi-Fi cannot be connected within a short timeout window, firmware must:
+  - Automatically open Wi-Fi settings
+  - Trigger a scan so the user can pick an available network
+  - Avoid getting stuck on boot screen
+- Wi-Fi scanning while disconnected must remain reliable:
+  - Scans must return available networks
+  - Reconnect logic must not continuously interfere with scan completion
+
+### 4.15 Standby Screen
+
+- Standby mode must auto-activate after 2 minutes without interaction.
+- Standby mode must be dismissed by a touch tap and return to home/root view.
+- Standby rendering must include:
+  - Weather summary card (condition, current temp, hi/low)
+  - Multi-day forecast strip
+  - Energy summary card using four circular nodes (Solar, Grid, Home, Battery)
+  - Energy labels/values rendered below each node for readability
+  - Battery node should show current SoC (%) when available
+  - Tapping the battery node should request an on-demand SoC refresh without exiting standby
+- Standby data refresh behavior must be battery-aware:
+  - Active standby UI refresh cadence: hourly
+  - Refresh should avoid unnecessary high-frequency updates
+- Standby data sources must support:
+  - Weather from Home Assistant weather entities/forecast service
+  - Energy values sourced from Home Assistant energy preferences (`energy/get_prefs`) with fallback to configured entities
+
 ## 5. Non-Functional Requirements
 
 ### 5.1 Reliability
 
 - Device should recover from Wi-Fi and Home Assistant disconnections.
+- If configured Wi-Fi is unavailable at boot, the user must still be able to recover using the on-device Wi-Fi settings flow.
 - Discovery and rendering must be robust against large registries and missing icons.
 - Memory use must remain stable when opening rooms with many controls.
 
@@ -193,6 +246,7 @@ It should be fast to navigate, reliable for daily use, and simple to understand.
 ## 7. Acceptance Criteria
 
 - User can boot device, connect to Wi-Fi, and authenticate to Home Assistant.
+- If default Wi-Fi is unavailable, device automatically opens Wi-Fi settings and allows recovery to another network.
 - User can browse floors and rooms via paged tile grids.
 - User can open any room without crash or memory panic.
 - Dense rooms with many controls are navigable using room control pages.
@@ -204,6 +258,10 @@ It should be fast to navigate, reliable for daily use, and simple to understand.
 - Cover controls are usable in rooms, showing group covers by default with up/down controls, while allowing configured single-cover exceptions such as a projector screen.
 - Back navigation works consistently between all navigation levels.
 - Front home button returns to the floor list root from room list or room controls.
+- Settings menu is reachable from home and supports both Wi-Fi and standby-debug entries.
+- Wi-Fi screen shows live network details and scan results, and supports joining secure/open networks.
+- Standby screen appears after idle timeout, can be opened from settings for debug, and exits to home on tap.
+- Standby weather and energy data render in readable layout (values below energy nodes).
 - UI reflects external Home Assistant state changes after initial load.
 - Page transitions feel faster than previous `CLEAR_SLOW` behavior.
 - In-room climate and cover control updates visibly redraw only the changed control regions.

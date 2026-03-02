@@ -12,7 +12,9 @@ struct Configuration {
     const char* weather_entity_id;
     const char* energy_solar_entity_id;
     const char* energy_grid_entity_id;
+    const char* energy_grid_export_entity_id;
     const char* energy_battery_usage_entity_id;
+    const char* energy_battery_charge_entity_id;
     const char* energy_battery_soc_entity_id;
     const char* energy_house_entity_id;
 };

@@ -175,6 +175,29 @@ static bool is_wifi_default_button_touched(const TouchEvent* touch_event) {
            touch_event->y >= WIFI_DEFAULT_BUTTON_Y && touch_event->y < WIFI_DEFAULT_BUTTON_Y + WIFI_DEFAULT_BUTTON_H;
 }
 
+static bool is_wifi_disc_retry_touched(const TouchEvent* touch_event) {
+    return touch_event->x >= WIFI_DISC_RETRY_X && touch_event->x < WIFI_DISC_RETRY_X + WIFI_DISC_RETRY_W &&
+           touch_event->y >= WIFI_DISC_BUTTON_Y && touch_event->y < WIFI_DISC_BUTTON_Y + WIFI_DISC_BUTTON_H;
+}
+
+static bool is_wifi_disc_settings_touched(const TouchEvent* touch_event) {
+    return touch_event->x >= WIFI_DISC_SETTINGS_X && touch_event->x < WIFI_DISC_SETTINGS_X + WIFI_DISC_SETTINGS_W &&
+           touch_event->y >= WIFI_DISC_BUTTON_Y && touch_event->y < WIFI_DISC_BUTTON_Y + WIFI_DISC_BUTTON_H;
+}
+
+static bool is_standby_battery_node_touched(const TouchEvent* touch_event) {
+    const int16_t card_x = STANDBY_MARGIN;
+    const int16_t card_w = DISPLAY_WIDTH - 2 * STANDBY_MARGIN;
+    const int16_t energy_bottom = STANDBY_ENERGY_Y + STANDBY_ENERGY_H;
+    const int16_t battery_cx = card_x + card_w / 2;
+    const int16_t battery_cy = energy_bottom - STANDBY_ENERGY_BATTERY_BOTTOM_OFFSET;
+    const int16_t dx = static_cast<int16_t>(touch_event->x) - battery_cx;
+    const int16_t dy = static_cast<int16_t>(touch_event->y) - battery_cy;
+    const int32_t distance_sq = static_cast<int32_t>(dx) * dx + static_cast<int32_t>(dy) * dy;
+    const int32_t radius_sq = static_cast<int32_t>(STANDBY_ENERGY_NODE_RADIUS) * STANDBY_ENERGY_NODE_RADIUS;
+    return distance_sq <= radius_sq;
+}
+
 static int8_t list_swipe_delta(const TouchEvent* start_touch, const TouchEvent* end_touch) {
     const int16_t dx = static_cast<int16_t>(end_touch->x) - static_cast<int16_t>(start_touch->x);
     const int16_t dy = static_cast<int16_t>(end_touch->y) - static_cast<int16_t>(start_touch->y);
@@ -398,6 +421,7 @@ void touch_task(void* arg) {
     static WifiSettingsSnapshot wifi_settings_snapshot = {};
     static WifiPasswordSnapshot wifi_password_snapshot = {};
     bool touching = false;
+    bool swallow_touch_release = false;
     int active_widget = -1;
     uint32_t last_touch_ms = 0;
     uint32_t standby_touch_ignore_until_ms = 0;
@@ -425,6 +449,9 @@ void touch_task(void* arg) {
     }
     while (true) {
         const uint32_t now_ms = millis();
+        if (!touching) {
+            swallow_touch_release = false;
+        }
         if (!touching) {
             bool go_home = false;
             if (poll_gt911_home && gt911_addr_present && gt911_home_button_pressed_edge(gt911_addr)) {
@@ -462,6 +489,16 @@ void touch_task(void* arg) {
                     active_widget = -1;
                     continue;
                 }
+                touch_event.x = ti.x[0];
+                touch_event.y = ti.y[0];
+                if (is_standby_battery_node_touched(&touch_event)) {
+                    ESP_LOGI(TAG, "Standby battery touched: refreshing SoC");
+                    store_request_standby_battery_soc_refresh(store);
+                    standby_touch_ignore_until_ms = now_ms + 350;
+                    touching = false;
+                    active_widget = -1;
+                    continue;
+                }
                 store_go_home(store);
                 touching = false;
                 active_widget = -1;
@@ -474,11 +511,17 @@ void touch_task(void* arg) {
                     touch_event.y = ti.y[0];
                     if (is_back_button_touched(&touch_event)) {
                         store_settings_back(store);
+                        touch_start = touch_event;
+                        touch_end = touch_event;
+                        touching = true;
+                        swallow_touch_release = true;
+                        active_widget = -1;
                         continue;
                     }
                     touch_start = touch_event;
                     touch_end = touch_event;
                     touching = true;
+                    swallow_touch_release = false;
                 } else {
                     touch_end.x = ti.x[0];
                     touch_end.y = ti.y[0];
@@ -492,10 +535,20 @@ void touch_task(void* arg) {
                     touch_event.y = ti.y[0];
                     if (is_back_button_touched(&touch_event)) {
                         store_settings_back(store);
+                        touch_start = touch_event;
+                        touch_end = touch_event;
+                        touching = true;
+                        swallow_touch_release = true;
+                        active_widget = -1;
                         continue;
                     }
                     if (is_wifi_scan_button_touched(&touch_event)) {
                         wifi_request_scan();
+                        touch_start = touch_event;
+                        touch_end = touch_event;
+                        touching = true;
+                        swallow_touch_release = true;
+                        active_widget = -1;
                         continue;
                     }
                     if (is_wifi_default_button_touched(&touch_event)) {
@@ -503,11 +556,17 @@ void touch_task(void* arg) {
                         if (wifi_settings_snapshot.custom_profile_active) {
                             wifi_reset_to_default();
                         }
+                        touch_start = touch_event;
+                        touch_end = touch_event;
+                        touching = true;
+                        swallow_touch_release = true;
+                        active_widget = -1;
                         continue;
                     }
                     touch_start = touch_event;
                     touch_end = touch_event;
                     touching = true;
+                    swallow_touch_release = false;
                 } else {
                     touch_end.x = ti.x[0];
                     touch_end.y = ti.y[0];
@@ -521,11 +580,17 @@ void touch_task(void* arg) {
                     touch_event.y = ti.y[0];
                     if (is_back_button_touched(&touch_event)) {
                         store_settings_back(store);
+                        touch_start = touch_event;
+                        touch_end = touch_event;
+                        touching = true;
+                        swallow_touch_release = true;
+                        active_widget = -1;
                         continue;
                     }
                     touch_start = touch_event;
                     touch_end = touch_event;
                     touching = true;
+                    swallow_touch_release = false;
                 } else {
                     touch_end.x = ti.x[0];
                     touch_end.y = ti.y[0];
@@ -540,12 +605,22 @@ void touch_task(void* arg) {
 
                     if (ui_state->mode == UiMode::FloorList && is_home_settings_button_touched(&touch_event)) {
                         store_open_settings(store);
+                        touch_start = touch_event;
+                        touch_end = touch_event;
+                        touching = true;
+                        swallow_touch_release = true;
+                        active_widget = -1;
                         continue;
                     }
 
                     if (ui_state->mode == UiMode::RoomList && is_back_button_touched(&touch_event)) {
                         ESP_LOGI(TAG, "Back to floor list");
                         store_select_floor(store, -1);
+                        touch_start = touch_event;
+                        touch_end = touch_event;
+                        touching = true;
+                        swallow_touch_release = true;
+                        active_widget = -1;
                         continue;
                     }
 
@@ -553,6 +628,7 @@ void touch_task(void* arg) {
                     touch_start.y = ti.y[0];
                     touch_end = touch_start;
                     touching = true;
+                    swallow_touch_release = false;
                 } else {
                     touch_end.x = ti.x[0];
                     touch_end.y = ti.y[0];
@@ -560,12 +636,33 @@ void touch_task(void* arg) {
                 continue;
             }
 
-            if (ui_state->mode == UiMode::WifiDisconnected) {
+            if (ui_state->mode == UiMode::WifiDisconnected || ui_state->mode == UiMode::HassDisconnected) {
                 if (!touching) {
-                    touch_start.x = ti.x[0];
-                    touch_start.y = ti.y[0];
-                    touch_end = touch_start;
+                    touch_event.x = ti.x[0];
+                    touch_event.y = ti.y[0];
+                    if (is_wifi_disc_retry_touched(&touch_event)) {
+                        wifi_reconnect();
+                        touch_start = touch_event;
+                        touch_end = touch_event;
+                        touching = true;
+                        swallow_touch_release = true;
+                        active_widget = -1;
+                        continue;
+                    }
+                    if (is_wifi_disc_settings_touched(&touch_event)) {
+                        store_open_wifi_settings(store);
+                        wifi_request_scan();
+                        touch_start = touch_event;
+                        touch_end = touch_event;
+                        touching = true;
+                        swallow_touch_release = true;
+                        active_widget = -1;
+                        continue;
+                    }
+                    touch_start = touch_event;
+                    touch_end = touch_event;
                     touching = true;
+                    swallow_touch_release = false;
                 } else {
                     touch_end.x = ti.x[0];
                     touch_end.y = ti.y[0];
@@ -583,10 +680,12 @@ void touch_task(void* arg) {
                 touch_start = touch_event;
                 touch_end = touch_event;
                 touching = true;
+                swallow_touch_release = false;
 
                 if (is_back_button_touched(&touch_event)) {
                     ESP_LOGI(TAG, "Back to room list");
                     store_select_room(store, -1);
+                    swallow_touch_release = true;
                     continue;
                 }
 
@@ -605,6 +704,16 @@ void touch_task(void* arg) {
             if (touching) {
                 ui_state_copy(ctx->state, &ui_state_version, ui_state);
 
+                if (swallow_touch_release) {
+                    if (millis() - last_touch_ms > TOUCH_RELEASE_TIMEOUT_MS) {
+                        touching = false;
+                        swallow_touch_release = false;
+                        active_widget = -1;
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(25));
+                    continue;
+                }
+
                 if (ui_state->mode == UiMode::SettingsMenu && millis() - last_touch_ms > TOUCH_RELEASE_TIMEOUT_MS) {
                     if (is_settings_wifi_tile_touched(&touch_start)) {
                         store_open_wifi_settings(store);
@@ -615,6 +724,7 @@ void touch_task(void* arg) {
                         }
                     }
                     touching = false;
+                    swallow_touch_release = false;
                     active_widget = -1;
                     continue;
                 }
@@ -629,7 +739,16 @@ void touch_task(void* arg) {
                                                                             ui_state->wifi_list_page);
                         if (network_idx >= 0) {
                             const WifiNetwork& network = wifi_settings_snapshot.networks[network_idx];
-                            if (network.secure) {
+                            if (network.known) {
+                                char saved_password[MAX_WIFI_PASSWORD_LEN + 1] = {0};
+                                if (wifi_find_saved_password(network.ssid, saved_password, sizeof(saved_password))) {
+                                    wifi_connect_to_network(network.ssid, saved_password);
+                                } else if (network.secure) {
+                                    store_open_wifi_password(store, network.ssid);
+                                } else {
+                                    wifi_connect_to_network(network.ssid, "");
+                                }
+                            } else if (network.secure) {
                                 store_open_wifi_password(store, network.ssid);
                             } else {
                                 wifi_connect_to_network(network.ssid, "");
@@ -637,6 +756,7 @@ void touch_task(void* arg) {
                         }
                     }
                     touching = false;
+                    swallow_touch_release = false;
                     active_widget = -1;
                     continue;
                 }
@@ -676,6 +796,7 @@ void touch_task(void* arg) {
                         }
                     }
                     touching = false;
+                    swallow_touch_release = false;
                     active_widget = -1;
                     continue;
                 }
@@ -714,14 +835,15 @@ void touch_task(void* arg) {
                     }
 
                     touching = false;
+                    swallow_touch_release = false;
                     active_widget = -1;
                     continue;
                 }
 
-                if (ui_state->mode == UiMode::WifiDisconnected && millis() - last_touch_ms > TOUCH_RELEASE_TIMEOUT_MS) {
-                    store_open_wifi_settings(store);
-                    wifi_request_scan();
+                if ((ui_state->mode == UiMode::WifiDisconnected || ui_state->mode == UiMode::HassDisconnected) &&
+                    millis() - last_touch_ms > TOUCH_RELEASE_TIMEOUT_MS) {
                     touching = false;
+                    swallow_touch_release = false;
                     active_widget = -1;
                     continue;
                 }
@@ -749,6 +871,7 @@ void touch_task(void* arg) {
                 if (millis() - last_touch_ms > TOUCH_RELEASE_TIMEOUT_MS) {
                     ESP_LOGI(TAG, "End of touch");
                     touching = false;
+                    swallow_touch_release = false;
                     active_widget = -1;
                 }
                 vTaskDelay(pdMS_TO_TICKS(25));

@@ -16,6 +16,7 @@ enum class CommandType : uint8_t {
     SetFanSpeedPercentage,
     SwitchOnOff,
     AutomationOnOff,
+    RefreshStandbyBatterySoc,
 };
 
 struct HomeAssistantEntity {
@@ -90,6 +91,7 @@ struct WifiNetwork {
     char ssid[MAX_WIFI_SSID_LEN];
     int16_t rssi;
     bool secure;
+    bool known; // has a saved password — tap to connect without re-entering
 };
 
 struct WifiSettingsSnapshot {
@@ -206,6 +208,7 @@ struct EntityStore {
     bool standby_active = false;
     uint32_t standby_last_refresh_ms = 0;
     bool standby_data_dirty = false;
+    bool standby_refresh_battery_soc_pending = false;
     uint32_t standby_revision = 0;
     StandbySnapshot standby = {};
 
@@ -269,6 +272,7 @@ void store_get_wifi_settings_snapshot(EntityStore* store, WifiSettingsSnapshot* 
 bool store_get_wifi_password_snapshot(EntityStore* store, WifiPasswordSnapshot* snapshot);
 void store_note_interaction(EntityStore* store, uint32_t now_ms);
 void store_poll_standby_timeout(EntityStore* store, uint32_t now_ms);
+void store_request_standby_battery_soc_refresh(EntityStore* store);
 void store_set_standby_weather(EntityStore* store, const char* condition, bool has_temperature, float temperature_c);
 void store_set_standby_forecast(EntityStore* store, const StandbyForecastDay* days, uint8_t day_count);
 void store_set_standby_energy_metric(EntityStore* store, StandbyEnergyMetric metric, bool valid, float value);

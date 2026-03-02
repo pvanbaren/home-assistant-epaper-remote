@@ -11,6 +11,7 @@ static const char* TAG = "wifi";
 static constexpr const char* WIFI_PREFS_NS = "wifi";
 static constexpr const char* WIFI_PREF_SSID_KEY = "ssid";
 static constexpr const char* WIFI_PREF_PASS_KEY = "pass";
+static constexpr const char* WIFI_PREF_NET_COUNT_KEY = "nc";
 
 struct WifiContext {
     Configuration* config = nullptr;
@@ -25,6 +26,9 @@ struct WifiContext {
     bool active_custom_profile = false;
     char active_ssid[MAX_WIFI_SSID_LEN] = {0};
     char active_password[MAX_WIFI_PASSWORD_LEN + 1] = {0};
+    uint32_t boot_connect_started_ms = 0;
+    bool boot_settings_fallback_shown = false;
+    bool pause_reconnect_for_scan = false;
 };
 
 static WifiContext g_wifi = {};
@@ -39,6 +43,85 @@ static void copy_string(char* dst, size_t dst_len, const char* src) {
     }
     strncpy(dst, src, dst_len - 1);
     dst[dst_len - 1] = '\0';
+}
+
+struct WifiHistoryEntry {
+    char ssid[MAX_WIFI_SSID_LEN];
+    char password[MAX_WIFI_PASSWORD_LEN + 1];
+};
+
+static uint8_t wifi_load_history(WifiHistoryEntry* out, uint8_t max_count) {
+    Preferences prefs;
+    if (!prefs.begin(WIFI_PREFS_NS, true)) {
+        return 0;
+    }
+    uint8_t count = prefs.getUChar(WIFI_PREF_NET_COUNT_KEY, 0);
+    if (count > max_count) {
+        count = max_count;
+    }
+    char key[6];
+    for (uint8_t i = 0; i < count; i++) {
+        snprintf(key, sizeof(key), "ss%u", i);
+        String ssid = prefs.getString(key, "");
+        snprintf(key, sizeof(key), "sp%u", i);
+        String pass = prefs.getString(key, "");
+        copy_string(out[i].ssid, sizeof(out[i].ssid), ssid.c_str());
+        copy_string(out[i].password, sizeof(out[i].password), pass.c_str());
+    }
+    prefs.end();
+    return count;
+}
+
+static void wifi_save_history(const WifiHistoryEntry* entries, uint8_t count) {
+    if (count > MAX_WIFI_SAVED_NETWORKS) {
+        count = MAX_WIFI_SAVED_NETWORKS;
+    }
+    Preferences prefs;
+    if (!prefs.begin(WIFI_PREFS_NS, false)) {
+        ESP_LOGW(TAG, "failed to open NVS for saving Wi-Fi history");
+        return;
+    }
+    prefs.putUChar(WIFI_PREF_NET_COUNT_KEY, count);
+    char key[6];
+    for (uint8_t i = 0; i < count; i++) {
+        snprintf(key, sizeof(key), "ss%u", i);
+        prefs.putString(key, entries[i].ssid);
+        snprintf(key, sizeof(key), "sp%u", i);
+        prefs.putString(key, entries[i].password);
+    }
+    prefs.end();
+}
+
+static void wifi_add_to_history(const char* ssid, const char* password) {
+    if (!ssid || ssid[0] == '\0') {
+        return;
+    }
+    WifiHistoryEntry entries[MAX_WIFI_SAVED_NETWORKS];
+    uint8_t count = wifi_load_history(entries, MAX_WIFI_SAVED_NETWORKS);
+
+    WifiHistoryEntry new_entries[MAX_WIFI_SAVED_NETWORKS];
+    copy_string(new_entries[0].ssid, sizeof(new_entries[0].ssid), ssid);
+    copy_string(new_entries[0].password, sizeof(new_entries[0].password), password ? password : "");
+    uint8_t new_count = 1;
+    for (uint8_t i = 0; i < count && new_count < MAX_WIFI_SAVED_NETWORKS; i++) {
+        if (strcmp(entries[i].ssid, ssid) != 0) {
+            new_entries[new_count++] = entries[i];
+        }
+    }
+    wifi_save_history(new_entries, new_count);
+    ESP_LOGI(TAG, "saved '%s' to network history (%u total)", ssid, new_count);
+}
+
+bool wifi_find_saved_password(const char* ssid, char* pass_out, size_t pass_len) {
+    WifiHistoryEntry entries[MAX_WIFI_SAVED_NETWORKS];
+    uint8_t count = wifi_load_history(entries, MAX_WIFI_SAVED_NETWORKS);
+    for (uint8_t i = 0; i < count; i++) {
+        if (strcmp(entries[i].ssid, ssid) == 0) {
+            copy_string(pass_out, pass_len, entries[i].password);
+            return true;
+        }
+    }
+    return false;
 }
 
 static bool wifi_load_saved_profile(char* ssid_out, size_t ssid_out_len, char* pass_out, size_t pass_out_len) {
@@ -70,6 +153,7 @@ static void wifi_save_custom_profile(const char* ssid, const char* password) {
     prefs.putString(WIFI_PREF_SSID_KEY, ssid ? ssid : "");
     prefs.putString(WIFI_PREF_PASS_KEY, password ? password : "");
     prefs.end();
+    ESP_LOGI(TAG, "saved active custom profile for SSID '%s'", ssid ? ssid : "");
 }
 
 static void wifi_clear_custom_profile() {
@@ -82,6 +166,7 @@ static void wifi_clear_custom_profile() {
     prefs.remove(WIFI_PREF_SSID_KEY);
     prefs.remove(WIFI_PREF_PASS_KEY);
     prefs.end();
+    ESP_LOGI(TAG, "cleared active custom profile");
 }
 
 static bool wifi_start_connection(const char* ssid, const char* password, bool custom_profile_active) {
@@ -95,6 +180,7 @@ static bool wifi_start_connection(const char* ssid, const char* password, bool c
     g_wifi.recovery_requested = false;
     g_wifi.recovery_reason = 0;
     g_wifi.consecutive_disconnects = 0;
+    g_wifi.pause_reconnect_for_scan = false;
     store_set_wifi_profile(g_wifi.store, g_wifi.active_ssid, g_wifi.active_custom_profile);
 
     ESP_LOGI(TAG, "connecting to SSID '%s' (%s profile)", ssid, custom_profile_active ? "custom" : "default");
@@ -107,6 +193,22 @@ static bool wifi_start_connection(const char* ssid, const char* password, bool c
     delay(120);
     WiFi.begin(ssid, password ? password : "");
     return true;
+}
+
+static void wifi_resume_connection_after_scan() {
+    if (!g_wifi.pause_reconnect_for_scan) {
+        return;
+    }
+    g_wifi.pause_reconnect_for_scan = false;
+
+    if (WiFi.status() == WL_CONNECTED || g_wifi.active_ssid[0] == '\0') {
+        return;
+    }
+
+    ESP_LOGI(TAG, "resuming connection to SSID '%s' after scan", g_wifi.active_ssid);
+    store_set_wifi_connecting(g_wifi.store, true);
+    store_set_wifi_state(g_wifi.store, ConnState::Initializing);
+    WiFi.begin(g_wifi.active_ssid, g_wifi.active_password);
 }
 
 static void wifi_request_recovery(uint8_t reason) {
@@ -140,8 +242,6 @@ static void wifi_perform_recovery() {
 static bool wifi_reason_invalid_credentials(uint8_t reason) {
     switch (reason) {
     case WIFI_REASON_AUTH_FAIL:
-    case WIFI_REASON_HANDSHAKE_TIMEOUT:
-    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
         return true;
     default:
         return false;
@@ -186,8 +286,16 @@ static void wifi_start_scan_now() {
         return;
     }
 
+    g_wifi.pause_reconnect_for_scan = WiFi.status() != WL_CONNECTED;
+    if (g_wifi.pause_reconnect_for_scan) {
+        ESP_LOGI(TAG, "pausing reconnect while scanning");
+        WiFi.disconnect(false, false);
+        delay(80);
+    }
+
     WiFi.scanDelete();
-    int16_t rc = WiFi.scanNetworks(true, true);
+    int16_t rc = WiFi.scanNetworks(/*async=*/true, /*show_hidden=*/true, /*passive=*/false, /*max_ms_per_chan=*/500);
+    ESP_LOGI(TAG, "scan start rc=%d", rc);
     if (rc == WIFI_SCAN_RUNNING || rc >= 0) {
         g_wifi.scan_running = true;
         store_set_wifi_scan_state(g_wifi.store, true);
@@ -195,6 +303,7 @@ static void wifi_start_scan_now() {
         g_wifi.scan_running = false;
         store_set_wifi_scan_state(g_wifi.store, false);
         store_set_wifi_connect_error(g_wifi.store, "Wi-Fi scan failed");
+        wifi_resume_connection_after_scan();
     }
 }
 
@@ -248,11 +357,25 @@ static void wifi_handle_scan_complete(int16_t count) {
         }
     }
 
+    WifiHistoryEntry history[MAX_WIFI_SAVED_NETWORKS];
+    uint8_t history_count = wifi_load_history(history, MAX_WIFI_SAVED_NETWORKS);
+    for (uint8_t i = 0; i < stored_count; i++) {
+        networks[i].known = false;
+        for (uint8_t j = 0; j < history_count; j++) {
+            if (strcmp(networks[i].ssid, history[j].ssid) == 0) {
+                networks[i].known = true;
+                break;
+            }
+        }
+    }
+
+    ESP_LOGI(TAG, "scan complete raw=%d unique=%u", count, static_cast<unsigned>(stored_count));
     store_set_wifi_scan_results(g_wifi.store, networks, stored_count);
     store_set_wifi_scan_state(g_wifi.store, false);
     store_set_wifi_connect_error(g_wifi.store, nullptr);
     WiFi.scanDelete();
     g_wifi.scan_running = false;
+    wifi_resume_connection_after_scan();
 }
 
 void launch_wifi(Configuration* config, EntityStore* store) {
@@ -268,6 +391,9 @@ void launch_wifi(Configuration* config, EntityStore* store) {
     g_wifi.active_custom_profile = false;
     g_wifi.active_ssid[0] = '\0';
     g_wifi.active_password[0] = '\0';
+    g_wifi.boot_connect_started_ms = millis();
+    g_wifi.boot_settings_fallback_shown = false;
+    g_wifi.pause_reconnect_for_scan = false;
 
     WiFi.onEvent([store](WiFiEvent_t event, WiFiEventInfo_t info) {
         ESP_LOGI(TAG, "received wifi event: %d", event);
@@ -278,6 +404,8 @@ void launch_wifi(Configuration* config, EntityStore* store) {
             g_wifi.consecutive_disconnects = 0;
             g_wifi.recovery_requested = false;
             g_wifi.recovery_reason = 0;
+            g_wifi.boot_settings_fallback_shown = true;
+            g_wifi.pause_reconnect_for_scan = false;
             store_set_wifi_state(store, ConnState::Up);
             store_set_wifi_connecting(store, false);
             store_set_wifi_connect_error(store, nullptr);
@@ -291,24 +419,19 @@ void launch_wifi(Configuration* config, EntityStore* store) {
             g_wifi.consecutive_disconnects++;
             store_set_wifi_connection_info(store, false, "", "", -127);
 
-            if (invalid_credentials && g_wifi.active_custom_profile && g_wifi.config && g_wifi.config->wifi_ssid &&
-                g_wifi.config->wifi_ssid[0] != '\0') {
-                ESP_LOGW(TAG, "custom profile credentials failed; falling back to default profile");
-                store_set_wifi_connect_error(store, "Custom Wi-Fi failed, using default");
-                wifi_clear_custom_profile();
-                wifi_start_connection(g_wifi.config->wifi_ssid, g_wifi.config->wifi_password, false);
+            if (g_wifi.pause_reconnect_for_scan) {
+                ESP_LOGI(TAG, "disconnect happened during scan, reconnect paused");
                 break;
             }
 
             if (invalid_credentials) {
+                ESP_LOGW(TAG, "auth failed for SSID '%s'; keeping saved credentials for manual retry/edit", g_wifi.active_ssid);
                 store_set_wifi_connecting(store, false);
                 store_set_wifi_state(store, ConnState::InvalidCredentials);
                 store_set_wifi_connect_error(store, wifi_reason_message(reason));
                 break;
             }
 
-            store_set_wifi_connecting(store, true);
-            store_set_wifi_state(store, ConnState::Initializing);
             store_set_wifi_connect_error(store, wifi_reason_message(reason));
 
             // Recover from repeated AUTH_EXPIRE loops by resetting the STA driver and reconnecting.
@@ -316,9 +439,19 @@ void launch_wifi(Configuration* config, EntityStore* store) {
                 uint32_t now = millis();
                 if (now - g_wifi.last_recovery_ms > 8000) {
                     g_wifi.last_recovery_ms = now;
+                    store_set_wifi_connecting(store, true);
+                    store_set_wifi_state(store, ConnState::Initializing);
                     wifi_request_recovery(reason);
                 }
+            } else if (g_wifi.consecutive_disconnects >= 5) {
+                // Too many consecutive failures: escape the Boot screen so the user
+                // can tap Retry or open Wi-Fi Settings, while reconnect continues in background.
+                store_set_wifi_connecting(store, false);
+                store_set_wifi_state(store, ConnState::ConnectionError);
+                WiFi.reconnect();
             } else {
+                store_set_wifi_connecting(store, true);
+                store_set_wifi_state(store, ConnState::Initializing);
                 WiFi.reconnect();
             }
             break;
@@ -341,9 +474,11 @@ void launch_wifi(Configuration* config, EntityStore* store) {
     bool use_custom_profile = false;
     if (wifi_load_saved_profile(boot_ssid, sizeof(boot_ssid), boot_password, sizeof(boot_password))) {
         use_custom_profile = true;
+        ESP_LOGI(TAG, "loaded saved custom profile for SSID '%s'", boot_ssid);
     } else {
         copy_string(boot_ssid, sizeof(boot_ssid), config->wifi_ssid ? config->wifi_ssid : "");
         copy_string(boot_password, sizeof(boot_password), config->wifi_password ? config->wifi_password : "");
+        ESP_LOGI(TAG, "no saved custom profile, using default SSID '%s'", boot_ssid);
     }
 
     if (boot_ssid[0] == '\0') {
@@ -374,6 +509,7 @@ bool wifi_connect_to_network(const char* ssid, const char* password) {
         return false;
     }
 
+    wifi_add_to_history(ssid, password ? password : "");
     wifi_save_custom_profile(ssid, password ? password : "");
     return wifi_start_connection(ssid, password, true);
 }
@@ -387,9 +523,30 @@ bool wifi_reset_to_default() {
     return wifi_start_connection(g_wifi.config->wifi_ssid, g_wifi.config->wifi_password, false);
 }
 
+bool wifi_reconnect() {
+    if (!g_wifi.store || g_wifi.active_ssid[0] == '\0') {
+        return false;
+    }
+    g_wifi.consecutive_disconnects = 0;
+    return wifi_start_connection(g_wifi.active_ssid, g_wifi.active_password, g_wifi.active_custom_profile);
+}
+
 void wifi_poll() {
     if (!g_wifi.store) {
         return;
+    }
+
+    if (!g_wifi.boot_settings_fallback_shown) {
+        uint32_t now = millis();
+        const bool timeout_elapsed = static_cast<uint32_t>(now - g_wifi.boot_connect_started_ms) >= WIFI_BOOT_SETTINGS_FALLBACK_MS;
+        const bool connected = WiFi.status() == WL_CONNECTED;
+        if (timeout_elapsed && !connected) {
+            g_wifi.boot_settings_fallback_shown = true;
+            ESP_LOGW(TAG, "startup Wi-Fi connect timed out after %lu ms; opening Wi-Fi settings", static_cast<unsigned long>(now - g_wifi.boot_connect_started_ms));
+            store_open_wifi_settings(g_wifi.store);
+            g_wifi.scan_requested = true;
+            store_set_wifi_connect_error(g_wifi.store, "Select a Wi-Fi network");
+        }
     }
 
     if (g_wifi.recovery_requested) {
@@ -411,6 +568,7 @@ void wifi_poll() {
             store_set_wifi_scan_state(g_wifi.store, false);
             store_set_wifi_connect_error(g_wifi.store, "Wi-Fi scan failed");
             WiFi.scanDelete();
+            wifi_resume_connection_after_scan();
         }
     }
 

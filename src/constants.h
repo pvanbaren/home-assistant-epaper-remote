@@ -40,10 +40,12 @@ constexpr size_t MAX_ICON_NAME_LEN = 64;
 constexpr size_t MAX_FLOOR_NAME_LEN = 40;
 constexpr size_t MAX_ROOM_NAME_LEN = 40;
 constexpr size_t MAX_WIFI_NETWORKS = 24;
+constexpr uint8_t MAX_WIFI_SAVED_NETWORKS = 8;
 constexpr size_t MAX_WIFI_SSID_LEN = 33;
 constexpr size_t MAX_WIFI_PASSWORD_LEN = 64;
 constexpr size_t MAX_WIFI_IP_LEN = 20;
 constexpr size_t MAX_WIFI_ERROR_LEN = 64;
+constexpr uint32_t WIFI_BOOT_SETTINGS_FALLBACK_MS = 7000;
 constexpr size_t MAX_STANDBY_CONDITION_LEN = 32;
 constexpr size_t MAX_STANDBY_FORECAST_DAYS = 5;
 constexpr size_t MAX_STANDBY_DAY_LABEL_LEN = 8;
@@ -138,6 +140,14 @@ constexpr uint16_t WIFI_KEYBOARD_W = DISPLAY_WIDTH - 2 * WIFI_KEYBOARD_X;
 constexpr uint16_t WIFI_KEY_H = 56;
 constexpr uint16_t WIFI_KEY_GAP = 8;
 
+// WiFi Disconnected screen buttons
+constexpr uint16_t WIFI_DISC_BUTTON_Y = 750;
+constexpr uint16_t WIFI_DISC_BUTTON_H = 80;
+constexpr uint16_t WIFI_DISC_RETRY_X = 30;
+constexpr uint16_t WIFI_DISC_RETRY_W = 230;
+constexpr uint16_t WIFI_DISC_SETTINGS_X = 280;
+constexpr uint16_t WIFI_DISC_SETTINGS_W = 230;
+
 // Standby UI geometry
 constexpr uint16_t STANDBY_MARGIN = 18;
 constexpr uint16_t STANDBY_HEADER_Y = 20;
@@ -145,3 +155,8 @@ constexpr uint16_t STANDBY_WEATHER_Y = 20;
 constexpr uint16_t STANDBY_WEATHER_H = 360;
 constexpr uint16_t STANDBY_ENERGY_Y = STANDBY_WEATHER_Y + STANDBY_WEATHER_H + 8;
 constexpr uint16_t STANDBY_ENERGY_H = DISPLAY_HEIGHT - STANDBY_ENERGY_Y - 6;
+constexpr uint16_t STANDBY_ENERGY_NODE_RADIUS = 60;
+constexpr uint16_t STANDBY_ENERGY_SOLAR_OFFSET_Y = 94;
+constexpr uint16_t STANDBY_ENERGY_SIDE_NODE_OFFSET_X = 88;
+constexpr uint16_t STANDBY_ENERGY_GRID_OFFSET_Y = 262;
+constexpr uint16_t STANDBY_ENERGY_BATTERY_BOTTOM_OFFSET = 176;
