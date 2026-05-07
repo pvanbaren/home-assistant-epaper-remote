@@ -1,9 +1,8 @@
 #include "config_remote.h"
+#include "assets/icons.h"
 #include "config.h"
 
-void configure_remote(Configuration* config, EntityStore* store, Screen* screen) {
-    (void)store;
-    (void)screen;
+void configure_remote(Configuration* config) {
 
     // Configure wifi
     config->wifi_ssid = "MyWifiSSID";
@@ -11,17 +10,59 @@ void configure_remote(Configuration* config, EntityStore* store, Screen* screen)
 
     // Configure home assistant
     // If you're using https, use wss://, otherwise use ws://
-    config->home_assistant_url = "ws://192.168.0.1/api/websocket";
+    config->home_assistant_url = "wss://homeassistant.local:8123/api/websocket";
     config->home_assistant_token = "ey...";
     config->root_ca = ISRG_ROOT_X1; // You probably don't need to update this
 
-    // Standby screen entities
-    config->weather_entity_id = "";
-    config->energy_solar_entity_id = "";
-    config->energy_grid_entity_id = "";
-    config->energy_grid_export_entity_id = "";
-    config->energy_battery_usage_entity_id = "";
-    config->energy_battery_charge_entity_id = "";
-    config->energy_battery_soc_entity_id = "";
-    config->energy_house_entity_id = "";
+    // Roku ECP / HA-canonical command names — shared across all devices.
+    config->media_remote_commands = {
+        /* up */          "Up",
+        /* down */        "Down",
+        /* left */        "Left",
+        /* right */       "Right",
+        /* select */      "Select",
+        /* back */        "Back",
+        /* home */        "Home",
+        /* menu */        "Info",
+        /* play_pause */  "Play",
+        /* rewind */      "reverse",
+        /* fast_forward */"forward",
+        /* previous */    "replay",
+    };
+
+    // Per-device entity IDs and source channel labels. Tap the title in the
+    // header to switch between devices; the active index is persisted in NVS.
+    config->media_devices[0] = MediaDevice{
+        /* title */                "Living Room",
+        /* remote_entity_id */     "remote.roku_living_room",
+        /* volume_entity_id */     "media_player.living_room_2",
+        /* source_entity_id */     "media_player.roku_living_room",
+        /* power_script_entity_id*/"script.toggle_living_room_system",
+        /* sources */ {
+            {"YouTube TV",   "YouTube TV",   youtube_tv},
+            {"Disney+",      "Disney Plus",  disney_plus},
+            {"Prime Video",  "Prime Video",  amazon_prime},
+            {"Netflix",      "Netflix",      netflix},
+            {"YouTube",      "YouTube",      youtube},
+            {}, // 6th slot — fill in to use
+        },
+    };
+
+    config->media_devices[1] = MediaDevice{
+        /* title */                "Family Room",
+        /* remote_entity_id */     "remote.roku_family_room",
+        /* volume_entity_id */     "media_player.family_room",
+        /* source_entity_id */     "media_player.roku_family_room",
+        /* power_script_entity_id*/nullptr,
+        /* sources */ {
+            {"YouTube TV",   "YouTube TV",   youtube_tv},
+            {"Disney+",      "Disney Plus",  disney_plus},
+            {"Prime Video",  "Prime Video",  amazon_prime},
+            {"Netflix",      "Netflix",      netflix},
+            {"YouTube",      "YouTube",      youtube},
+            {}, // 6th slot — fill in to use
+        },
+    };
+
+    config->media_device_count = 2;
 }

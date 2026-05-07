@@ -1,5 +1,41 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+
+struct MediaRemoteCommands {
+    const char* up;
+    const char* down;
+    const char* left;
+    const char* right;
+    const char* select;
+    const char* back;
+    const char* home;
+    const char* menu;
+    const char* play_pause;
+    const char* rewind;
+    const char* fast_forward;
+    const char* previous;
+};
+
+constexpr size_t MEDIA_SOURCE_COUNT = 6;
+constexpr size_t MAX_MEDIA_DEVICES = 6;
+
+struct MediaSource {
+    const char* label;          // fallback text if icon == nullptr
+    const char* source_name;    // passed to media_player.select_source
+    const uint8_t* icon;        // optional 64x64 BMP from icons.h
+};
+
+struct MediaDevice {
+    const char* title;                    // header label, e.g. "Living Room"
+    const char* remote_entity_id;         // remote.* target for D-pad / transport / Back / Home / Menu
+    const char* volume_entity_id;         // media_player.* for volume up/down/mute
+    const char* source_entity_id;         // media_player.* for select_source (often the streaming box)
+    const char* power_script_entity_id;   // script.* for the power button (may be nullptr)
+    MediaSource sources[MEDIA_SOURCE_COUNT];
+};
+
 struct Configuration {
     const char* wifi_ssid;
     const char* wifi_password;
@@ -7,6 +43,12 @@ struct Configuration {
     const char* home_assistant_url;
     const char* home_assistant_token;
     const char* root_ca;
+
+    // Remote command names are shared across devices (Roku ECP, etc.).
+    MediaRemoteCommands media_remote_commands;
+
+    MediaDevice media_devices[MAX_MEDIA_DEVICES];
+    size_t media_device_count;
 };
 
 constexpr const char* ISRG_ROOT_X1 = ( // LetsEncrypt CA

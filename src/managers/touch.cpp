@@ -1,10 +1,23 @@
 #include "managers/touch.h"
 #include "managers/wifi.h"
 #include "boards.h"
+#include "config.h"
 #include "constants.h"
+#include <Arduino.h>
 #include <Wire.h>
+#include <driver/gpio.h>
 
 static const char* TAG = "touch";
+
+static volatile TaskHandle_t s_touch_task_handle = nullptr;
+
+static void IRAM_ATTR touch_int_isr() {
+    if (s_touch_task_handle) {
+        BaseType_t hpw = pdFALSE;
+        vTaskNotifyGiveFromISR(s_touch_task_handle, &hpw);
+        portYIELD_FROM_ISR(hpw);
+    }
+}
 
 static bool i2c_read_reg8(uint8_t addr, uint8_t reg, uint8_t* buf, size_t len) {
     Wire.beginTransmission(addr);
@@ -81,7 +94,16 @@ static bool detect_gt911_address(uint8_t* out_addr) {
     return false;
 }
 
-static bool configure_gt911_low_level_query(uint8_t addr) {
+// GT911 INT trigger modes (MODULE_SWITCH_1 register, bits 0-1):
+//   0x00 = rising edge,  0x01 = falling edge,
+//   0x02 = low level query,  0x03 = high level query.
+// LOW_LEVEL_QUERY holds INT low until the host reads the data — convenient for
+// polling, but unworkable for light-sleep wake: the level-triggered GPIO wake
+// keeps re-firing gpio_intr_service while INT stays low, faster than the
+// touch task can wake and drain GT911, tripping IWDT. FALLING_EDGE pulses INT
+// briefly on each event then releases it high — the pulse triggers the
+// level-low wake but level returns high before gpio_intr_service can spin.
+static bool configure_gt911_int_mode(uint8_t addr, uint8_t mode_bits) {
     constexpr uint16_t GT911_CFG_START_REG = 0x8047;
     constexpr uint16_t GT911_MODULE_SWITCH_1_REG = 0x804D;
     constexpr uint16_t GT911_CFG_CHECKSUM_REG = 0x80FF;
@@ -91,7 +113,7 @@ static bool configure_gt911_low_level_query(uint8_t addr) {
     if (!i2c_read_reg16(addr, GT911_MODULE_SWITCH_1_REG, &module_switch, 1)) {
         return false;
     }
-    const uint8_t desired_mode = static_cast<uint8_t>((module_switch & 0xFC) | 0x02); // LOW_LEVEL_QUERY
+    const uint8_t desired_mode = static_cast<uint8_t>((module_switch & 0xFC) | (mode_bits & 0x03));
 
     if (!i2c_write_reg16(addr, GT911_MODULE_SWITCH_1_REG, desired_mode)) {
         return false;
@@ -150,21 +172,6 @@ static bool is_back_button_touched(const TouchEvent* touch_event) {
            touch_event->y >= ROOM_CONTROLS_BACK_Y && touch_event->y < ROOM_CONTROLS_BACK_Y + ROOM_CONTROLS_BACK_H;
 }
 
-static bool is_home_settings_button_touched(const TouchEvent* touch_event) {
-    return touch_event->x >= HOME_SETTINGS_BUTTON_X && touch_event->x < HOME_SETTINGS_BUTTON_X + HOME_SETTINGS_BUTTON_W &&
-           touch_event->y >= HOME_SETTINGS_BUTTON_Y && touch_event->y < HOME_SETTINGS_BUTTON_Y + HOME_SETTINGS_BUTTON_H;
-}
-
-static bool is_settings_wifi_tile_touched(const TouchEvent* touch_event) {
-    return touch_event->x >= SETTINGS_TILE_X && touch_event->x < SETTINGS_TILE_X + SETTINGS_TILE_W && touch_event->y >= SETTINGS_TILE_Y &&
-           touch_event->y < SETTINGS_TILE_Y + SETTINGS_TILE_H;
-}
-
-static bool is_settings_standby_tile_touched(const TouchEvent* touch_event) {
-    return touch_event->x >= SETTINGS_STANDBY_TILE_X && touch_event->x < SETTINGS_STANDBY_TILE_X + SETTINGS_STANDBY_TILE_W &&
-           touch_event->y >= SETTINGS_STANDBY_TILE_Y && touch_event->y < SETTINGS_STANDBY_TILE_Y + SETTINGS_STANDBY_TILE_H;
-}
-
 static bool is_wifi_scan_button_touched(const TouchEvent* touch_event) {
     return touch_event->x >= WIFI_SCAN_BUTTON_X && touch_event->x < WIFI_SCAN_BUTTON_X + WIFI_SCAN_BUTTON_W &&
            touch_event->y >= WIFI_SCAN_BUTTON_Y && touch_event->y < WIFI_SCAN_BUTTON_Y + WIFI_SCAN_BUTTON_H;
@@ -185,18 +192,6 @@ static bool is_wifi_disc_settings_touched(const TouchEvent* touch_event) {
            touch_event->y >= WIFI_DISC_BUTTON_Y && touch_event->y < WIFI_DISC_BUTTON_Y + WIFI_DISC_BUTTON_H;
 }
 
-static bool is_standby_battery_node_touched(const TouchEvent* touch_event) {
-    const int16_t card_x = STANDBY_MARGIN;
-    const int16_t card_w = DISPLAY_WIDTH - 2 * STANDBY_MARGIN;
-    const int16_t energy_bottom = STANDBY_ENERGY_Y + STANDBY_ENERGY_H;
-    const int16_t battery_cx = card_x + card_w / 2;
-    const int16_t battery_cy = energy_bottom - STANDBY_ENERGY_BATTERY_BOTTOM_OFFSET;
-    const int16_t dx = static_cast<int16_t>(touch_event->x) - battery_cx;
-    const int16_t dy = static_cast<int16_t>(touch_event->y) - battery_cy;
-    const int32_t distance_sq = static_cast<int32_t>(dx) * dx + static_cast<int32_t>(dy) * dy;
-    const int32_t radius_sq = static_cast<int32_t>(STANDBY_ENERGY_NODE_RADIUS) * STANDBY_ENERGY_NODE_RADIUS;
-    return distance_sq <= radius_sq;
-}
 
 static int8_t list_swipe_delta(const TouchEvent* start_touch, const TouchEvent* end_touch) {
     const int16_t dx = static_cast<int16_t>(end_touch->x) - static_cast<int16_t>(start_touch->x);
@@ -333,79 +328,177 @@ static WifiPasswordAction wifi_password_action_from_touch(const TouchEvent* touc
     return action;
 }
 
-struct ListGridLayout {
-    int16_t columns;
-    int16_t rows;
-    int16_t items_per_page;
+enum class MediaButton : uint8_t {
+    None,
+    Settings,
+    Title,
+    Battery,
+    Power, Mute, VolDown, VolUp,
+    Back, Home, Info,
+    Touchpad, // returned by hit-test; resolves to DpadUp/Down/Left/Right/Ok at release based on swipe
+    DpadUp, DpadDown, DpadLeft, DpadRight, DpadOk,
+    Rewind, InstantReplay, PlayPause, FastForward,
+    Source0, Source1, Source2, Source3, Source4, Source5,
 };
 
-static ListGridLayout list_grid_layout(uint8_t item_count, uint8_t page_count, bool expand_single_page_layout) {
-    ListGridLayout layout = {
-        .columns = ROOM_LIST_COLUMNS,
-        .rows = ROOM_LIST_ROWS,
-        .items_per_page = ROOM_LIST_ROOMS_PER_PAGE,
-    };
-
-    if (!expand_single_page_layout || page_count != 1 || item_count == 0 || item_count > ROOM_LIST_ROOMS_PER_PAGE) {
-        return layout;
-    }
-
-    if (item_count <= 3) {
-        layout.columns = 1;
-        layout.rows = item_count;
-    } else {
-        layout.columns = 2;
-        layout.rows = static_cast<int16_t>((item_count + 1) / 2);
-    }
-    layout.items_per_page = layout.columns * layout.rows;
-    return layout;
+static bool point_in(const TouchEvent* t, int16_t x, int16_t y, int16_t w, int16_t h) {
+    return t->x >= x && t->x < x + w && t->y >= y && t->y < y + h;
 }
 
-static int16_t list_index_from_touch(const TouchEvent* touch_event, uint8_t item_count, uint8_t list_page, uint16_t grid_start_y,
-                                     bool expand_single_page_layout) {
-    if (touch_event->x < ROOM_LIST_GRID_MARGIN_X || touch_event->x >= DISPLAY_WIDTH - ROOM_LIST_GRID_MARGIN_X) {
-        return -1;
-    }
-    if (touch_event->y < grid_start_y || touch_event->y >= ROOM_LIST_GRID_BOTTOM_Y) {
-        return -1;
+static MediaButton media_button_from_touch(const TouchEvent* t) {
+    // Wi-Fi indicator (top-left) — tap opens Wi-Fi settings.
+    if (point_in(t, HOME_LEFT_BUTTON_X, HOME_LEFT_BUTTON_Y, HOME_LEFT_BUTTON_W, HOME_LEFT_BUTTON_H)) {
+        return MediaButton::Settings;
     }
 
-    const uint8_t page_count = item_count == 0 ? 1 : static_cast<uint8_t>((item_count + ROOM_LIST_ROOMS_PER_PAGE - 1) / ROOM_LIST_ROOMS_PER_PAGE);
-    const uint8_t page = list_page >= page_count ? static_cast<uint8_t>(page_count - 1) : list_page;
-    const ListGridLayout layout = list_grid_layout(item_count, page_count, expand_single_page_layout);
-
-    const int16_t grid_w = DISPLAY_WIDTH - 2 * ROOM_LIST_GRID_MARGIN_X;
-    const int16_t grid_h = ROOM_LIST_GRID_BOTTOM_Y - grid_start_y;
-    const int16_t tile_w = (grid_w - (layout.columns - 1) * ROOM_LIST_GRID_GAP_X) / layout.columns;
-    const int16_t tile_h = (grid_h - (layout.rows - 1) * ROOM_LIST_GRID_GAP_Y) / layout.rows;
-
-    const int16_t rel_x = touch_event->x - ROOM_LIST_GRID_MARGIN_X;
-    const int16_t rel_y = touch_event->y - grid_start_y;
-
-    const int16_t col_stride = tile_w + ROOM_LIST_GRID_GAP_X;
-    const int16_t row_stride = tile_h + ROOM_LIST_GRID_GAP_Y;
-    const int16_t col = rel_x / col_stride;
-    const int16_t row = rel_y / row_stride;
-    if (col < 0 || col >= layout.columns || row < 0 || row >= layout.rows) {
-        return -1;
+    // Power button (top-right).
+    if (point_in(t, HOME_RIGHT_BUTTON_X, HOME_RIGHT_BUTTON_Y, HOME_RIGHT_BUTTON_W, HOME_RIGHT_BUTTON_H)) {
+        return MediaButton::Power;
     }
 
-    const int16_t x_in_tile = rel_x % col_stride;
-    const int16_t y_in_tile = rel_y % row_stride;
-    if (x_in_tile >= tile_w || y_in_tile >= tile_h) {
-        return -1;
+    // Battery indicator slot — tap opens the battery status page.
+    {
+        constexpr int16_t batt_slot_w = 40; // covers the 16 px body and ~24 px text width
+        const int16_t batt_x = HOME_LEFT_BUTTON_X + HOME_LEFT_BUTTON_W;
+        if (point_in(t, batt_x, HOME_LEFT_BUTTON_Y, batt_slot_w, HOME_LEFT_BUTTON_H)) {
+            return MediaButton::Battery;
+        }
     }
 
-    const int16_t slot = row * layout.columns + col;
-    const int16_t item_idx = page * layout.items_per_page + slot;
-    return item_idx < item_count ? item_idx : -1;
+    // Title region: between the battery slot and the Power button. Tapping
+    // here opens the device selector.
+    {
+        constexpr int16_t batt_slot_w = 40;
+        const int16_t title_x = HOME_LEFT_BUTTON_X + HOME_LEFT_BUTTON_W + batt_slot_w;
+        const int16_t title_w = HOME_RIGHT_BUTTON_X - title_x;
+        if (title_w > 0 && point_in(t, title_x, HOME_LEFT_BUTTON_Y, title_w, HOME_LEFT_BUTTON_H)) {
+            return MediaButton::Title;
+        }
+    }
+
+    // Top 3x3 grid: right column = volume; (0,0) = power; rest = sources.
+    {
+        const int16_t inner_w = DISPLAY_WIDTH - 2 * MEDIA_MARGIN_X;
+        const int16_t btn_w = (inner_w - 2 * MEDIA_BUTTON_GAP) / 3;
+        const int16_t col_x[3] = {
+            MEDIA_MARGIN_X,
+            MEDIA_MARGIN_X + (btn_w + MEDIA_BUTTON_GAP),
+            MEDIA_MARGIN_X + 2 * (btn_w + MEDIA_BUTTON_GAP),
+        };
+        const int16_t row_y[3] = {MEDIA_VOLUME_ROW_Y, MEDIA_VOLUME_ROW2_Y, MEDIA_VOLUME_ROW3_Y};
+        if (point_in(t, col_x[2], row_y[0], btn_w, MEDIA_BUTTON_H)) return MediaButton::VolUp;
+        if (point_in(t, col_x[2], row_y[1], btn_w, MEDIA_BUTTON_H)) return MediaButton::VolDown;
+        if (point_in(t, col_x[2], row_y[2], btn_w, MEDIA_BUTTON_H)) return MediaButton::Mute;
+        if (point_in(t, col_x[0], row_y[0], btn_w, MEDIA_BUTTON_H)) return MediaButton::Source0;
+        if (point_in(t, col_x[1], row_y[0], btn_w, MEDIA_BUTTON_H)) return MediaButton::Source1;
+        if (point_in(t, col_x[0], row_y[1], btn_w, MEDIA_BUTTON_H)) return MediaButton::Source2;
+        if (point_in(t, col_x[1], row_y[1], btn_w, MEDIA_BUTTON_H)) return MediaButton::Source3;
+        if (point_in(t, col_x[0], row_y[2], btn_w, MEDIA_BUTTON_H)) return MediaButton::Source4;
+        if (point_in(t, col_x[1], row_y[2], btn_w, MEDIA_BUTTON_H)) return MediaButton::Source5;
+    }
+
+    // Nav row
+    {
+        const int16_t inner_w = DISPLAY_WIDTH - 2 * MEDIA_MARGIN_X;
+        const int16_t btn_w = (inner_w - 2 * MEDIA_BUTTON_GAP) / 3;
+        const MediaButton ids[3] = {MediaButton::Back, MediaButton::Home, MediaButton::Info};
+        for (uint8_t i = 0; i < 3; i++) {
+            const int16_t x = MEDIA_MARGIN_X + i * (btn_w + MEDIA_BUTTON_GAP);
+            if (point_in(t, x, MEDIA_NAV_ROW_Y, btn_w, MEDIA_BUTTON_H)) {
+                return ids[i];
+            }
+        }
+    }
+
+    // Touchpad width matches the buttons above/below; swipe disambiguated at release.
+    {
+        const int16_t pad_w = DISPLAY_WIDTH - 2 * MEDIA_MARGIN_X;
+        if (point_in(t, MEDIA_MARGIN_X, MEDIA_DPAD_Y, pad_w, MEDIA_DPAD_SIZE)) {
+            return MediaButton::Touchpad;
+        }
+    }
+
+    // Transport row
+    {
+        const int16_t inner_w = DISPLAY_WIDTH - 2 * MEDIA_MARGIN_X;
+        const int16_t btn_w = (inner_w - 3 * MEDIA_BUTTON_GAP) / 4;
+        const MediaButton ids[4] = {MediaButton::Rewind, MediaButton::InstantReplay, MediaButton::PlayPause, MediaButton::FastForward};
+        for (uint8_t i = 0; i < 4; i++) {
+            const int16_t x = MEDIA_MARGIN_X + i * (btn_w + MEDIA_BUTTON_GAP);
+            if (point_in(t, x, MEDIA_TRANSPORT_ROW_Y, btn_w, MEDIA_BUTTON_H)) {
+                return ids[i];
+            }
+        }
+    }
+
+    return MediaButton::None;
+}
+
+static void media_dispatch_button(EntityStore* store, const Configuration* config, MediaButton btn) {
+    if (!config || config->media_device_count == 0) return;
+    const uint8_t device_idx = store_get_media_device_idx(store);
+    const uint8_t safe_idx = device_idx < config->media_device_count ? device_idx : 0;
+    const MediaDevice& device = config->media_devices[safe_idx];
+    const MediaRemoteCommands& cmds = config->media_remote_commands;
+    const char* remote = device.remote_entity_id;
+    const char* volume = device.volume_entity_id;
+
+    auto remote_cmd = [&](const char* name) {
+        if (remote && name) {
+            store_send_media_command(store, CommandType::RemoteSendCommand, remote, name);
+        }
+    };
+
+    switch (btn) {
+    case MediaButton::Power:
+        if (device.power_script_entity_id) {
+            store_send_media_command(store, CommandType::ScriptTurnOn, device.power_script_entity_id, nullptr);
+        }
+        break;
+    case MediaButton::Mute:
+        if (volume) store_send_media_command(store, CommandType::MediaVolumeMute, volume, nullptr);
+        break;
+    case MediaButton::VolDown:
+        if (volume) store_send_media_command(store, CommandType::MediaVolumeDown, volume, nullptr);
+        break;
+    case MediaButton::VolUp:
+        if (volume) store_send_media_command(store, CommandType::MediaVolumeUp, volume, nullptr);
+        break;
+    case MediaButton::Back:           remote_cmd(cmds.back); break;
+    case MediaButton::Home:           remote_cmd(cmds.home); break;
+    case MediaButton::Info:           remote_cmd(cmds.menu); break;
+    case MediaButton::DpadUp:         remote_cmd(cmds.up); break;
+    case MediaButton::DpadDown:       remote_cmd(cmds.down); break;
+    case MediaButton::DpadLeft:       remote_cmd(cmds.left); break;
+    case MediaButton::DpadRight:      remote_cmd(cmds.right); break;
+    case MediaButton::DpadOk:         remote_cmd(cmds.select); break;
+    case MediaButton::Rewind:         remote_cmd(cmds.rewind); break;
+    case MediaButton::InstantReplay:  remote_cmd(cmds.previous); break;
+    case MediaButton::PlayPause:      remote_cmd(cmds.play_pause); break;
+    case MediaButton::FastForward:    remote_cmd(cmds.fast_forward); break;
+    case MediaButton::Source0:
+    case MediaButton::Source1:
+    case MediaButton::Source2:
+    case MediaButton::Source3:
+    case MediaButton::Source4:
+    case MediaButton::Source5: {
+        const size_t idx = static_cast<size_t>(btn) - static_cast<size_t>(MediaButton::Source0);
+        if (idx < MEDIA_SOURCE_COUNT && device.source_entity_id && device.sources[idx].source_name) {
+            store_send_media_command(store, CommandType::MediaSelectSource,
+                                     device.source_entity_id,
+                                     device.sources[idx].source_name);
+        }
+        break;
+    }
+    default: break;
+    }
 }
 
 void touch_task(void* arg) {
     TouchTaskArgs* ctx = static_cast<TouchTaskArgs*>(arg);
     BBCapTouch* bbct = ctx->bbct;
     EntityStore* store = ctx->store;
-    Screen* screen = ctx->screen;
+    const Configuration* config = ctx->config;
 
     // UI State values
     uint32_t ui_state_version = 0;
@@ -416,19 +509,25 @@ void touch_task(void* arg) {
     TouchEvent touch_event = TouchEvent{};
     TouchEvent touch_start = TouchEvent{};
     TouchEvent touch_end = TouchEvent{};
-    static FloorListSnapshot floor_list_snapshot = {};
-    static RoomListSnapshot room_list_snapshot = {};
     static WifiSettingsSnapshot wifi_settings_snapshot = {};
     static WifiPasswordSnapshot wifi_password_snapshot = {};
     bool touching = false;
     bool swallow_touch_release = false;
-    int active_widget = -1;
     uint32_t last_touch_ms = 0;
     uint32_t standby_touch_ignore_until_ms = 0;
-    uint8_t widget_original_value = 0;
-    uint8_t widget_current_value = 0;
+    // Auto-repeat: when a held button supports it (volume), retrigger every
+    // AUTOREPEAT_INTERVAL_MS until release. None disables.
+    MediaButton autorepeat_btn = MediaButton::None;
+    uint32_t last_repeat_ms = 0;
+    constexpr uint32_t AUTOREPEAT_INTERVAL_MS = 200;
 
-    // Initialize touch
+    // Initialize touch. Wait for the panel power rail to come up before
+    // poking the GT911 over I2C. epaper.einkPower(true) in setup() returns
+    // before the rail is fully stable, and on a wake-from-deep-sleep boot
+    // the GT911 hasn't yet released its I2C lines — bbct.init() then
+    // misdetects the chip as CST226 and the bus errors with
+    // ESP_ERR_INVALID_STATE.
+    vTaskDelay(pdMS_TO_TICKS(50));
     ESP_LOGI(TAG, "Initializing touchscreen...");
     int rc = bbct->init(TOUCH_SDA, TOUCH_SCL, TOUCH_RST, TOUCH_INT);
     ESP_LOGI(TAG, "init() rc = %d", rc);
@@ -441,12 +540,31 @@ void touch_task(void* arg) {
     const bool poll_cst226_home = (type == CT_TYPE_CST226) || cst226_addr_present;
     ESP_LOGI(TAG, "Touch home key polling: GT911=%d CST226=%d", poll_gt911_home ? 1 : 0, poll_cst226_home ? 1 : 0);
     if (poll_gt911_home && gt911_addr_present) {
-        if (configure_gt911_low_level_query(gt911_addr)) {
-            ESP_LOGI(TAG, "Configured GT911 interrupt mode to LOW_LEVEL_QUERY");
+#if defined(ENABLE_PM_LIGHT_SLEEP)
+        // Falling-edge so INT pulses on each event instead of holding low —
+        // see configure_gt911_int_mode comment for why this matters under
+        // light-sleep wake.
+        constexpr uint8_t kGt911IntMode = 0x01; // FALLING_EDGE
+        const char* kGt911IntModeName = "FALLING_EDGE";
+#else
+        constexpr uint8_t kGt911IntMode = 0x02; // LOW_LEVEL_QUERY
+        const char* kGt911IntModeName = "LOW_LEVEL_QUERY";
+#endif
+        if (configure_gt911_int_mode(gt911_addr, kGt911IntMode)) {
+            ESP_LOGI(TAG, "Configured GT911 interrupt mode to %s", kGt911IntModeName);
         } else {
             ESP_LOGW(TAG, "Failed to configure GT911 interrupt mode");
         }
+#if defined(ENABLE_PM_LIGHT_SLEEP)
+        gpio_wakeup_enable(static_cast<gpio_num_t>(TOUCH_INT), GPIO_INTR_LOW_LEVEL);
+#endif
     }
+
+    // Wake on TOUCH_INT instead of polling. GT911 in LOW_LEVEL_QUERY pulls INT
+    // low on every touch/key event; CST226 also drives INT on touch events.
+    s_touch_task_handle = xTaskGetCurrentTaskHandle();
+    attachInterrupt(digitalPinToInterrupt(TOUCH_INT), touch_int_isr, FALLING);
+
     while (true) {
         const uint32_t now_ms = millis();
         if (!touching) {
@@ -479,53 +597,13 @@ void touch_task(void* arg) {
             store_note_interaction(store, last_touch_ms);
             ui_state_copy(ctx->state, &ui_state_version, ui_state);
 
-            if (ui_state->mode != UiMode::RoomControls) {
-                active_widget = -1;
-            }
-
             if (ui_state->mode == UiMode::Standby) {
                 if (now_ms < standby_touch_ignore_until_ms) {
                     touching = false;
-                    active_widget = -1;
-                    continue;
-                }
-                touch_event.x = ti.x[0];
-                touch_event.y = ti.y[0];
-                if (is_standby_battery_node_touched(&touch_event)) {
-                    ESP_LOGI(TAG, "Standby battery touched: refreshing SoC");
-                    store_request_standby_battery_soc_refresh(store);
-                    standby_touch_ignore_until_ms = now_ms + 350;
-                    touching = false;
-                    active_widget = -1;
                     continue;
                 }
                 store_go_home(store);
                 touching = false;
-                active_widget = -1;
-                continue;
-            }
-
-            if (ui_state->mode == UiMode::SettingsMenu) {
-                if (!touching) {
-                    touch_event.x = ti.x[0];
-                    touch_event.y = ti.y[0];
-                    if (is_back_button_touched(&touch_event)) {
-                        store_settings_back(store);
-                        touch_start = touch_event;
-                        touch_end = touch_event;
-                        touching = true;
-                        swallow_touch_release = true;
-                        active_widget = -1;
-                        continue;
-                    }
-                    touch_start = touch_event;
-                    touch_end = touch_event;
-                    touching = true;
-                    swallow_touch_release = false;
-                } else {
-                    touch_end.x = ti.x[0];
-                    touch_end.y = ti.y[0];
-                }
                 continue;
             }
 
@@ -539,7 +617,6 @@ void touch_task(void* arg) {
                         touch_end = touch_event;
                         touching = true;
                         swallow_touch_release = true;
-                        active_widget = -1;
                         continue;
                     }
                     if (is_wifi_scan_button_touched(&touch_event)) {
@@ -548,20 +625,20 @@ void touch_task(void* arg) {
                         touch_end = touch_event;
                         touching = true;
                         swallow_touch_release = true;
-                        active_widget = -1;
                         continue;
                     }
                     if (is_wifi_default_button_touched(&touch_event)) {
                         store_get_wifi_settings_snapshot(store, &wifi_settings_snapshot);
                         if (wifi_settings_snapshot.custom_profile_active) {
                             wifi_reset_to_default();
+                            touch_start = touch_event;
+                            touch_end = touch_event;
+                            touching = true;
+                            swallow_touch_release = true;
+                            continue;
                         }
-                        touch_start = touch_event;
-                        touch_end = touch_event;
-                        touching = true;
-                        swallow_touch_release = true;
-                        active_widget = -1;
-                        continue;
+                        // No custom profile active → button isn't drawn; let
+                        // the tap fall through to the default handler.
                     }
                     touch_start = touch_event;
                     touch_end = touch_event;
@@ -584,7 +661,6 @@ void touch_task(void* arg) {
                         touch_end = touch_event;
                         touching = true;
                         swallow_touch_release = true;
-                        active_widget = -1;
                         continue;
                     }
                     touch_start = touch_event;
@@ -598,37 +674,97 @@ void touch_task(void* arg) {
                 continue;
             }
 
-            if (ui_state->mode == UiMode::FloorList || ui_state->mode == UiMode::RoomList) {
+            if (ui_state->mode == UiMode::MediaController) {
                 if (!touching) {
                     touch_event.x = ti.x[0];
                     touch_event.y = ti.y[0];
-
-                    if (ui_state->mode == UiMode::FloorList && is_home_settings_button_touched(&touch_event)) {
-                        store_open_settings(store);
-                        touch_start = touch_event;
-                        touch_end = touch_event;
-                        touching = true;
-                        swallow_touch_release = true;
-                        active_widget = -1;
-                        continue;
-                    }
-
-                    if (ui_state->mode == UiMode::RoomList && is_back_button_touched(&touch_event)) {
-                        ESP_LOGI(TAG, "Back to floor list");
-                        store_select_floor(store, -1);
-                        touch_start = touch_event;
-                        touch_end = touch_event;
-                        touching = true;
-                        swallow_touch_release = true;
-                        active_widget = -1;
-                        continue;
-                    }
-
-                    touch_start.x = ti.x[0];
-                    touch_start.y = ti.y[0];
-                    touch_end = touch_start;
+                    touch_start = touch_event;
+                    touch_end = touch_event;
                     touching = true;
-                    swallow_touch_release = false;
+                    autorepeat_btn = MediaButton::None;
+                    // Touchpad needs swipe-vs-tap disambiguation at release.
+                    // Every other button is a discrete press: fire on touch
+                    // down so rapid tapping doesn't have to wait for the
+                    // release pendulum.
+                    const MediaButton btn = media_button_from_touch(&touch_start);
+                    if (btn == MediaButton::None || btn == MediaButton::Touchpad) {
+                        swallow_touch_release = false;
+                    } else {
+                        if (btn == MediaButton::Settings) {
+                            store_open_wifi_settings(store);
+                            wifi_request_scan();
+                        } else if (btn == MediaButton::Title) {
+                            store_open_media_device_select(store);
+                        } else if (btn == MediaButton::Battery) {
+                            store_open_battery_status(store);
+                        } else {
+                            media_dispatch_button(store, config, btn);
+                        }
+                        swallow_touch_release = true;
+                        if (btn == MediaButton::VolUp || btn == MediaButton::VolDown) {
+                            autorepeat_btn = btn;
+                            last_repeat_ms = now_ms;
+                        }
+                    }
+                } else {
+                    touch_end.x = ti.x[0];
+                    touch_end.y = ti.y[0];
+                    if (autorepeat_btn != MediaButton::None &&
+                        static_cast<uint32_t>(now_ms - last_repeat_ms) >= AUTOREPEAT_INTERVAL_MS) {
+                        media_dispatch_button(store, config, autorepeat_btn);
+                        last_repeat_ms = now_ms;
+                    }
+                }
+                continue;
+            }
+
+            if (ui_state->mode == UiMode::MediaDeviceSelect) {
+                if (!touching) {
+                    touch_event.x = ti.x[0];
+                    touch_event.y = ti.y[0];
+                    touch_start = touch_event;
+                    touch_end = touch_event;
+                    touching = true;
+                    swallow_touch_release = true;
+
+                    if (is_back_button_touched(&touch_event)) {
+                        store_close_media_device_select(store);
+                        continue;
+                    }
+
+                    constexpr int16_t row_h = 96;
+                    constexpr int16_t row_gap = 18;
+                    const int16_t row_w = DISPLAY_WIDTH - 2 * MEDIA_MARGIN_X;
+                    const int16_t y0 = SETTINGS_HEADER_HEIGHT + 32;
+                    const uint8_t device_count = config ? static_cast<uint8_t>(config->media_device_count) : 0;
+                    if (touch_event.x >= MEDIA_MARGIN_X && touch_event.x < MEDIA_MARGIN_X + row_w) {
+                        for (uint8_t i = 0; i < device_count; i++) {
+                            const int16_t y = y0 + static_cast<int16_t>(i) * (row_h + row_gap);
+                            if (touch_event.y >= y && touch_event.y < y + row_h) {
+                                store_set_media_device_idx(store, i, device_count);
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    touch_end.x = ti.x[0];
+                    touch_end.y = ti.y[0];
+                }
+                continue;
+            }
+
+            if (ui_state->mode == UiMode::BatteryStatus) {
+                if (!touching) {
+                    touch_event.x = ti.x[0];
+                    touch_event.y = ti.y[0];
+                    touch_start = touch_event;
+                    touch_end = touch_event;
+                    touching = true;
+                    swallow_touch_release = true;
+
+                    if (is_back_button_touched(&touch_event)) {
+                        store_close_battery_status(store);
+                    }
                 } else {
                     touch_end.x = ti.x[0];
                     touch_end.y = ti.y[0];
@@ -646,7 +782,6 @@ void touch_task(void* arg) {
                         touch_end = touch_event;
                         touching = true;
                         swallow_touch_release = true;
-                        active_widget = -1;
                         continue;
                     }
                     if (is_wifi_disc_settings_touched(&touch_event)) {
@@ -656,7 +791,6 @@ void touch_task(void* arg) {
                         touch_end = touch_event;
                         touching = true;
                         swallow_touch_release = true;
-                        active_widget = -1;
                         continue;
                     }
                     touch_start = touch_event;
@@ -670,36 +804,8 @@ void touch_task(void* arg) {
                 continue;
             }
 
-            if (ui_state->mode != UiMode::RoomControls) {
-                continue;
-            }
-
-            if (touching == false) {
-                touch_event.x = ti.x[0];
-                touch_event.y = ti.y[0];
-                touch_start = touch_event;
-                touch_end = touch_event;
-                touching = true;
-                swallow_touch_release = false;
-
-                if (is_back_button_touched(&touch_event)) {
-                    ESP_LOGI(TAG, "Back to room list");
-                    store_select_room(store, -1);
-                    swallow_touch_release = true;
-                    continue;
-                }
-
-                for (size_t widget_idx = 0; widget_idx < screen->widget_count; widget_idx++) {
-                    if (screen->widgets[widget_idx]->isTouching(&touch_event)) {
-                        ESP_LOGI(TAG, "Starting touch on widget %d", widget_idx);
-                        active_widget = widget_idx;
-                        break;
-                    }
-                }
-            } else {
-                touch_end.x = ti.x[0];
-                touch_end.y = ti.y[0];
-            }
+            // Other modes: ignore touch.
+            continue;
         } else {
             if (touching) {
                 ui_state_copy(ctx->state, &ui_state_version, ui_state);
@@ -708,24 +814,9 @@ void touch_task(void* arg) {
                     if (millis() - last_touch_ms > TOUCH_RELEASE_TIMEOUT_MS) {
                         touching = false;
                         swallow_touch_release = false;
-                        active_widget = -1;
+                        autorepeat_btn = MediaButton::None;
                     }
-                    vTaskDelay(pdMS_TO_TICKS(25));
-                    continue;
-                }
-
-                if (ui_state->mode == UiMode::SettingsMenu && millis() - last_touch_ms > TOUCH_RELEASE_TIMEOUT_MS) {
-                    if (is_settings_wifi_tile_touched(&touch_start)) {
-                        store_open_wifi_settings(store);
-                        wifi_request_scan();
-                    } else if (is_settings_standby_tile_touched(&touch_start)) {
-                        if (store_open_standby(store, now_ms)) {
-                            standby_touch_ignore_until_ms = now_ms + 600;
-                        }
-                    }
-                    touching = false;
-                    swallow_touch_release = false;
-                    active_widget = -1;
+                    vTaskDelay(pdMS_TO_TICKS(TOUCH_RELEASE_POLL_MS));
                     continue;
                 }
 
@@ -757,7 +848,6 @@ void touch_task(void* arg) {
                     }
                     touching = false;
                     swallow_touch_release = false;
-                    active_widget = -1;
                     continue;
                 }
 
@@ -797,46 +887,29 @@ void touch_task(void* arg) {
                     }
                     touching = false;
                     swallow_touch_release = false;
-                    active_widget = -1;
                     continue;
                 }
 
-                if ((ui_state->mode == UiMode::FloorList || ui_state->mode == UiMode::RoomList) &&
-                    millis() - last_touch_ms > TOUCH_RELEASE_TIMEOUT_MS) {
-                    int8_t page_delta = list_swipe_delta(&touch_start, &touch_end);
-                    if (ui_state->mode == UiMode::FloorList) {
-                        if (page_delta != 0) {
-                            if (store_shift_floor_list_page(store, page_delta)) {
-                                ESP_LOGI(TAG, "Swiped floor list to page delta %d", page_delta);
-                            }
-                        } else {
-                            store_get_floor_list_snapshot(store, &floor_list_snapshot);
-                            int16_t floor_idx = list_index_from_touch(&touch_start, floor_list_snapshot.floor_count,
-                                                                      ui_state->floor_list_page, FLOOR_LIST_GRID_START_Y, true);
-                            if (floor_idx >= 0) {
-                                ESP_LOGI(TAG, "Selecting floor %d", floor_idx);
-                                store_select_floor(store, static_cast<int8_t>(floor_idx));
-                            }
-                        }
-                    } else {
-                        if (page_delta != 0) {
-                            if (store_shift_room_list_page(store, page_delta)) {
-                                ESP_LOGI(TAG, "Swiped room list to page delta %d", page_delta);
-                            }
-                        } else if (store_get_room_list_snapshot(store, ui_state->selected_floor, &room_list_snapshot)) {
-                            int16_t room_list_idx = list_index_from_touch(&touch_start, room_list_snapshot.room_count,
-                                                                          ui_state->room_list_page, ROOM_LIST_GRID_START_Y, false);
-                            if (room_list_idx >= 0) {
-                                int8_t room_idx = room_list_snapshot.room_indices[room_list_idx];
-                                ESP_LOGI(TAG, "Selecting room %d", room_idx);
-                                store_select_room(store, room_idx);
-                            }
-                        }
+                if (ui_state->mode == UiMode::MediaController && millis() - last_touch_ms > TOUCH_RELEASE_TIMEOUT_MS) {
+                    // Buttons fire on touch-down (with swallow_touch_release set);
+                    // only the touchpad reaches here. A swipe past the threshold
+                    // dispatches the dominant direction; anything shorter is a
+                    // tap, which fires OK/Select.
+                    if (media_button_from_touch(&touch_start) == MediaButton::Touchpad) {
+                        constexpr int16_t SWIPE_THRESHOLD = 5;
+                        const int16_t dx = static_cast<int16_t>(touch_end.x) - static_cast<int16_t>(touch_start.x);
+                        const int16_t dy = static_cast<int16_t>(touch_end.y) - static_cast<int16_t>(touch_start.y);
+                        const int16_t abs_dx = dx < 0 ? -dx : dx;
+                        const int16_t abs_dy = dy < 0 ? -dy : dy;
+                        const MediaButton action = (abs_dx >= SWIPE_THRESHOLD || abs_dy >= SWIPE_THRESHOLD)
+                            ? (abs_dx > abs_dy
+                                ? (dx > 0 ? MediaButton::DpadRight : MediaButton::DpadLeft)
+                                : (dy > 0 ? MediaButton::DpadDown : MediaButton::DpadUp))
+                            : MediaButton::DpadOk;
+                        media_dispatch_button(store, config, action);
                     }
-
                     touching = false;
                     swallow_touch_release = false;
-                    active_widget = -1;
                     continue;
                 }
 
@@ -844,27 +917,6 @@ void touch_task(void* arg) {
                     millis() - last_touch_ms > TOUCH_RELEASE_TIMEOUT_MS) {
                     touching = false;
                     swallow_touch_release = false;
-                    active_widget = -1;
-                    continue;
-                }
-
-                if (ui_state->mode == UiMode::RoomControls && millis() - last_touch_ms > TOUCH_RELEASE_TIMEOUT_MS) {
-                    int8_t page_delta = list_swipe_delta(&touch_start, &touch_end);
-                    if (page_delta != 0) {
-                        if (store_shift_room_controls_page(store, page_delta)) {
-                            ESP_LOGI(TAG, "Swiped room controls to page delta %d", page_delta);
-                        }
-                    } else if (active_widget != -1) {
-                        widget_original_value = ui_state->widget_values[active_widget];
-                        widget_current_value = screen->widgets[active_widget]->getValueFromTouch(&touch_end, widget_original_value);
-                        if (widget_current_value != widget_original_value) {
-                            store_send_command(store, screen->entity_ids[active_widget], widget_current_value);
-                        }
-                    }
-
-                    ESP_LOGI(TAG, "End of touch");
-                    touching = false;
-                    active_widget = -1;
                     continue;
                 }
 
@@ -872,12 +924,15 @@ void touch_task(void* arg) {
                     ESP_LOGI(TAG, "End of touch");
                     touching = false;
                     swallow_touch_release = false;
-                    active_widget = -1;
                 }
-                vTaskDelay(pdMS_TO_TICKS(25));
+                vTaskDelay(pdMS_TO_TICKS(TOUCH_RELEASE_POLL_MS));
             } else {
                 store_poll_standby_timeout(store, millis());
-                vTaskDelay(pdMS_TO_TICKS(200));
+                // Sleep until the touch INT ISR notifies us, or the standby
+                // timer needs another tick. 2 s is short enough to keep
+                // STANDBY_IDLE_TIMEOUT_MS resolution and long enough to let
+                // the SoC actually enter light sleep between events.
+                ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2000));
             }
         }
     }

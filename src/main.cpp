@@ -7,10 +7,8 @@
 #include "managers/ui.h"
 #include "managers/wifi.h"
 #include "pm_lock.h"
-#include "screen.h"
 #include "store.h"
 #include "ui_state.h"
-#include "widgets/Slider.h"
 #include <Arduino.h>
 #include <FastEPD.h>
 #include <driver/gpio.h>
@@ -23,7 +21,6 @@ static Configuration config;
 static const char* TAG = "main";
 
 static FASTEPD epaper;
-static Screen screen;
 static BBCapTouch bbct;
 static EntityStore store;
 static SharedUIState shared_ui_state;
@@ -115,8 +112,8 @@ void setup() {
     // Initialize objects
     store_init(&store);
     ui_state_init(&shared_ui_state);
-    configure_remote(&config, &store, &screen);
-    initialize_slider_sprites();
+    configure_remote(&config);
+    store_load_persisted_media_device_idx(&store, config.media_device_count);
 
     // Initialize display
     epaper.initPanel(DISPLAY_PANEL);
@@ -127,9 +124,9 @@ void setup() {
 
     // Launch UI task
     ui_task_args.epaper = &epaper;
-    ui_task_args.screen = &screen;
     ui_task_args.store = &store;
     ui_task_args.shared_state = &shared_ui_state;
+    ui_task_args.config = &config;
     xTaskCreate(ui_task, "ui", 4096, &ui_task_args, 1, &store.ui_task);
 
     // Connect to wifi and launch watcher
@@ -142,9 +139,9 @@ void setup() {
 
     // Launch touch task
     touch_task_args.bbct = &bbct;
-    touch_task_args.screen = &screen;
     touch_task_args.state = &shared_ui_state;
     touch_task_args.store = &store;
+    touch_task_args.config = &config;
     xTaskCreate(touch_task, "touch", 4096, &touch_task_args, 1, nullptr);
 
     // Launch battery monitor (no-op on boards with BATTERY_ADC_PIN < 0).

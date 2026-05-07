@@ -12,27 +12,23 @@ enum class UiMode : uint8_t {
     WifiDisconnected,
     HassDisconnected,
     HassInvalidKey,
-    FloorList,
-    RoomList,
-    RoomControls,
+    MediaController,
+    MediaDeviceSelect,
+    BatteryStatus,
     Standby,
-    SettingsMenu,
     WifiSettings,
     WifiPassword,
 };
 
 struct UIState {
     UiMode mode = UiMode::Blank;
-    int8_t selected_floor = -1;
-    int8_t selected_room = -1;
-    uint8_t floor_list_page = 0;
-    uint8_t room_list_page = 0;
-    uint8_t room_controls_page = 0;
-    uint32_t rooms_revision = 0;
     uint8_t wifi_list_page = 0;
     uint32_t settings_revision = 0;
     uint32_t standby_revision = 0;
-    uint8_t widget_values[MAX_WIDGETS_PER_SCREEN] = {};
+    uint32_t battery_revision = 0;
+    uint8_t media_device_idx = 0;
+    int16_t wifi_rssi = -127;
+    bool wifi_connected = false;
 };
 
 // The touch task needs to know the current state of the UI.

@@ -18,7 +18,8 @@ constexpr uint32_t HASS_RECONNECT_DELAY_MS = 10000;
 // When sending commands too fast (on a slider), this can flood
 // the zigbee network and make the commands fail. Increase this delay
 // if you see errors when using sliders.
-constexpr uint32_t HASS_TASK_SEND_DELAY_MS = 500;
+constexpr uint32_t HASS_TASK_SEND_DELAY_MS = 50;
+constexpr size_t   MEDIA_COMMAND_QUEUE_SIZE = 8;
 
 // When sending commands, we'll receive the updates from the server
 // with a delay. This causes jittering in the slider and unnecessary
@@ -46,15 +47,17 @@ constexpr size_t MAX_WIFI_PASSWORD_LEN = 64;
 constexpr size_t MAX_WIFI_IP_LEN = 20;
 constexpr size_t MAX_WIFI_ERROR_LEN = 64;
 constexpr uint32_t WIFI_BOOT_SETTINGS_FALLBACK_MS = 7000;
-constexpr size_t MAX_STANDBY_CONDITION_LEN = 32;
-constexpr size_t MAX_STANDBY_FORECAST_DAYS = 5;
-constexpr size_t MAX_STANDBY_DAY_LABEL_LEN = 8;
-constexpr uint32_t TOUCH_RELEASE_TIMEOUT_MS = 25;
+constexpr uint32_t TOUCH_RELEASE_TIMEOUT_MS = 120;
+constexpr uint32_t TOUCH_RELEASE_POLL_MS = 5;
 constexpr uint32_t DISPLAY_FULL_REDRAW_TIMEOUT_MS = 15000;
 constexpr uint8_t DISPLAY_PARTIAL_UPDATE_PASSES = 2;
 constexpr uint8_t DISPLAY_FULL_UPDATE_PASSES = 4;
-constexpr uint32_t STANDBY_IDLE_TIMEOUT_MS = 120000;
+constexpr uint32_t STANDBY_IDLE_TIMEOUT_MS = 60000;       // 1 minute
 constexpr uint32_t STANDBY_REFRESH_INTERVAL_MS = 3600000; // 1 hour
+constexpr uint32_t DEEP_SLEEP_AFTER_STANDBY_MS = 300000;  // 5 minutes
+constexpr uint32_t BATTERY_REFRESH_INTERVAL_MS = 20000;   // 20 s between battery samples
+constexpr uint16_t BATTERY_FULL_MV = 4200;
+constexpr uint16_t BATTERY_EMPTY_MV = 3300;
 
 // Floor/room list UI geometry
 constexpr uint16_t ROOM_LIST_TITLE_Y = 40;
@@ -75,11 +78,35 @@ constexpr uint16_t ROOM_LIST_TILE_ICON_TOP_PADDING = 10;
 constexpr uint16_t ROOM_LIST_TILE_ICON_LABEL_GAP = 10;
 constexpr uint16_t ROOM_LIST_TILE_LABEL_BOTTOM_PADDING = 8;
 constexpr uint16_t ROOM_LIST_TILE_RADIUS = 18;
-constexpr uint16_t HOME_SETTINGS_BUTTON_X = DISPLAY_WIDTH - 92;
-constexpr uint16_t HOME_SETTINGS_BUTTON_Y = 31;
-constexpr uint16_t HOME_SETTINGS_BUTTON_W = 64;
-constexpr uint16_t HOME_SETTINGS_BUTTON_H = 64;
-constexpr uint16_t HOME_SETTINGS_ICON_SIZE = 30;
+// Media controller geometry
+constexpr int16_t MEDIA_MARGIN_X = 20;
+constexpr int16_t MEDIA_BUTTON_GAP = 12;
+constexpr int16_t MEDIA_BUTTON_H = 80;
+constexpr int16_t MEDIA_BUTTON_RADIUS = 14;
+
+// Order top -> bottom:
+//   nav row -> touchpad (tap=OK, swipe=dpad) -> transport -> 3x3 (sources + volume).
+// Header sits above the nav row; the 3x3 grid is anchored at the bottom.
+constexpr int16_t MEDIA_NAV_ROW_Y = 96;
+constexpr int16_t MEDIA_DPAD_Y = MEDIA_NAV_ROW_Y + MEDIA_BUTTON_H + 24;
+constexpr int16_t MEDIA_DPAD_SIZE = 352;
+constexpr int16_t MEDIA_TRANSPORT_ROW_Y = MEDIA_DPAD_Y + MEDIA_DPAD_SIZE + 24;
+constexpr int16_t MEDIA_VOLUME_ROW_Y = MEDIA_TRANSPORT_ROW_Y + MEDIA_BUTTON_H + 24;
+constexpr int16_t MEDIA_VOLUME_ROW2_Y = MEDIA_VOLUME_ROW_Y + MEDIA_BUTTON_H + MEDIA_BUTTON_GAP;
+constexpr int16_t MEDIA_VOLUME_ROW3_Y = MEDIA_VOLUME_ROW2_Y + MEDIA_BUTTON_H + MEDIA_BUTTON_GAP;
+
+// Two equal slots in the header: left hosts the Wi-Fi indicator (tap →
+// Wi-Fi settings); right hosts the Power button. Naming is geometric so
+// the role assignments can change without renaming again.
+constexpr uint16_t HOME_LEFT_BUTTON_X = MEDIA_MARGIN_X;
+constexpr uint16_t HOME_LEFT_BUTTON_Y = 18;
+constexpr uint16_t HOME_LEFT_BUTTON_W = 64;
+constexpr uint16_t HOME_LEFT_BUTTON_H = 64;
+
+constexpr uint16_t HOME_RIGHT_BUTTON_X = DISPLAY_WIDTH - 92;
+constexpr uint16_t HOME_RIGHT_BUTTON_Y = 18;
+constexpr uint16_t HOME_RIGHT_BUTTON_W = 64;
+constexpr uint16_t HOME_RIGHT_BUTTON_H = 64;
 
 // Room controls UI geometry
 constexpr uint16_t ROOM_CONTROLS_HEADER_HEIGHT = 110;
@@ -99,15 +126,6 @@ constexpr uint16_t ROOM_CONTROLS_BACK_H = 60;
 
 // Settings / Wi-Fi UI geometry
 constexpr uint16_t SETTINGS_HEADER_HEIGHT = 100;
-constexpr uint16_t SETTINGS_TILE_X = 30;
-constexpr uint16_t SETTINGS_TILE_Y = 190;
-constexpr uint16_t SETTINGS_TILE_W = DISPLAY_WIDTH - 2 * SETTINGS_TILE_X;
-constexpr uint16_t SETTINGS_TILE_H = 170;
-constexpr uint16_t SETTINGS_TILE_GAP = 24;
-constexpr uint16_t SETTINGS_STANDBY_TILE_X = SETTINGS_TILE_X;
-constexpr uint16_t SETTINGS_STANDBY_TILE_Y = SETTINGS_TILE_Y + SETTINGS_TILE_H + SETTINGS_TILE_GAP;
-constexpr uint16_t SETTINGS_STANDBY_TILE_W = SETTINGS_TILE_W;
-constexpr uint16_t SETTINGS_STANDBY_TILE_H = SETTINGS_TILE_H;
 
 constexpr uint16_t WIFI_INFO_X = 24;
 constexpr uint16_t WIFI_INFO_Y = SETTINGS_HEADER_HEIGHT + 18;
@@ -128,7 +146,10 @@ constexpr uint16_t WIFI_NETWORK_LIST_W = WIFI_INFO_W;
 constexpr uint16_t WIFI_NETWORK_ROW_H = 64;
 constexpr uint16_t WIFI_NETWORK_ROW_GAP = 10;
 constexpr uint8_t WIFI_NETWORKS_PER_PAGE = 7;
-constexpr uint16_t WIFI_NETWORK_PAGE_BADGE_Y = DISPLAY_HEIGHT - 54;
+// Y is the badge's text baseline. Box top = Y - 24, height 34, so the
+// box bottom sits at Y + 10. With Y = DISPLAY_HEIGHT - 34 the box bottom
+// matches WIFI_INFO_X (= 24) for a uniform side/bottom margin.
+constexpr uint16_t WIFI_NETWORK_PAGE_BADGE_Y = DISPLAY_HEIGHT - 34;
 
 constexpr uint16_t WIFI_PASSWORD_BOX_X = WIFI_INFO_X;
 constexpr uint16_t WIFI_PASSWORD_BOX_Y = SETTINGS_HEADER_HEIGHT + 20;
@@ -148,15 +169,3 @@ constexpr uint16_t WIFI_DISC_RETRY_W = 230;
 constexpr uint16_t WIFI_DISC_SETTINGS_X = 280;
 constexpr uint16_t WIFI_DISC_SETTINGS_W = 230;
 
-// Standby UI geometry
-constexpr uint16_t STANDBY_MARGIN = 18;
-constexpr uint16_t STANDBY_HEADER_Y = 20;
-constexpr uint16_t STANDBY_WEATHER_Y = 20;
-constexpr uint16_t STANDBY_WEATHER_H = 360;
-constexpr uint16_t STANDBY_ENERGY_Y = STANDBY_WEATHER_Y + STANDBY_WEATHER_H + 8;
-constexpr uint16_t STANDBY_ENERGY_H = DISPLAY_HEIGHT - STANDBY_ENERGY_Y - 6;
-constexpr uint16_t STANDBY_ENERGY_NODE_RADIUS = 60;
-constexpr uint16_t STANDBY_ENERGY_SOLAR_OFFSET_Y = 94;
-constexpr uint16_t STANDBY_ENERGY_SIDE_NODE_OFFSET_X = 88;
-constexpr uint16_t STANDBY_ENERGY_GRID_OFFSET_Y = 262;
-constexpr uint16_t STANDBY_ENERGY_BATTERY_BOTTOM_OFFSET = 176;
