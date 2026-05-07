@@ -52,7 +52,9 @@ struct WifiHistoryEntry {
 
 static uint8_t wifi_load_history(WifiHistoryEntry* out, uint8_t max_count) {
     Preferences prefs;
-    if (!prefs.begin(WIFI_PREFS_NS, true)) {
+    // RW open so a fresh NVS auto-creates the namespace instead of logging
+    // "nvs_open failed: NOT_FOUND" on first boot.
+    if (!prefs.begin(WIFI_PREFS_NS, false)) {
         return 0;
     }
     uint8_t count = prefs.getUChar(WIFI_PREF_NET_COUNT_KEY, 0);
@@ -126,7 +128,9 @@ bool wifi_find_saved_password(const char* ssid, char* pass_out, size_t pass_len)
 
 static bool wifi_load_saved_profile(char* ssid_out, size_t ssid_out_len, char* pass_out, size_t pass_out_len) {
     Preferences prefs;
-    if (!prefs.begin(WIFI_PREFS_NS, true)) {
+    // RW open so a fresh NVS auto-creates the namespace instead of logging
+    // "nvs_open failed: NOT_FOUND" on first boot.
+    if (!prefs.begin(WIFI_PREFS_NS, false)) {
         return false;
     }
 
@@ -381,7 +385,11 @@ static void wifi_handle_scan_complete(int16_t count) {
 void launch_wifi(Configuration* config, EntityStore* store) {
     g_wifi.config = config;
     g_wifi.store = store;
-    g_wifi.scan_requested = true;
+    // Don't auto-scan at boot: the channel-hopping races with the HA WS auth
+    // handshake and HA drops the connection after its 10 s auth timeout.
+    // wifi_poll triggers a scan if boot-connect times out; settings UI does
+    // the same on open.
+    g_wifi.scan_requested = false;
     g_wifi.scan_running = false;
     g_wifi.recovery_requested = false;
     g_wifi.recovery_reason = 0;
