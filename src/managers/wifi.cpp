@@ -234,7 +234,7 @@ static void wifi_perform_recovery() {
     delay(120);
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
-    WiFi.setSleep(false);
+    WiFi.setSleep(WIFI_PS_MAX_MODEM);
     WiFi.setTxPower(WIFI_POWER_8_5dBm);
     WiFi.begin(g_wifi.active_ssid, g_wifi.active_password);
 }
@@ -492,7 +492,7 @@ void launch_wifi(Configuration* config, EntityStore* store) {
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(false, true);
     WiFi.setAutoReconnect(true);
-    WiFi.setSleep(false);
+    WiFi.setSleep(WIFI_PS_MAX_MODEM);
     WiFi.setTxPower(WIFI_POWER_8_5dBm);
 
     wifi_start_connection(boot_ssid, boot_password, use_custom_profile);
