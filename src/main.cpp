@@ -93,6 +93,11 @@ static void enter_deep_sleep() {
     // panel ends in a clear, hint-bearing state for the duration of the sleep.
     ui_draw_standby_screen(&epaper);
     epaper.fullUpdate(CLEAR_FAST, true);
+    // Drop the BQ27220 fuel gauge into hibernate before cutting peripherals.
+    // I2C is still up and the chip is still powered here; this saves
+    // ~10–80 µA of board quiescent draw across deep sleep with no loss
+    // of SoC tracking.
+    battery_hibernate_fuel_gauge();
     epaper.einkPower(false);
 
     // Detach matrix-level ISRs on the pins we're about to touch with the

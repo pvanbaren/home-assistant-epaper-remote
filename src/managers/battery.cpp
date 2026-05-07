@@ -131,6 +131,20 @@ bool battery_read_fuel_gauge_detail(FuelGaugeDetail* out) {
     return true;
 }
 
+bool battery_hibernate_fuel_gauge() {
+    if (BATTERY_BQ27220_I2C_ADDR == 0) {
+        return false;
+    }
+    // SET_HIBERNATE = 0x0011 written to Control() (regs 0x00 / 0x01, LSB-first).
+    // The BQ27220 auto-increments the register pointer, so a single
+    // 3-byte write covers both bytes of the subcommand.
+    Wire.beginTransmission(BATTERY_BQ27220_I2C_ADDR);
+    Wire.write(static_cast<uint8_t>(0x00));
+    Wire.write(static_cast<uint8_t>(0x11));
+    Wire.write(static_cast<uint8_t>(0x00));
+    return Wire.endTransmission() == 0;
+}
+
 static bool bq27220_sample(uint16_t* voltage_mv, uint8_t* soc_pct) {
     uint16_t v = 0;
     if (!bq27220_read_word(BQ27220_REG_VOLTAGE, &v)) {

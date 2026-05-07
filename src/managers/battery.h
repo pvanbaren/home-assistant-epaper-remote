@@ -43,3 +43,10 @@ struct FuelGaugeDetail {
 // Read AverageCurrent() (0x10) and AverageTimeToEmpty() (0x18). No-op
 // (returns false) on boards without a BQ27220 configured.
 bool battery_read_fuel_gauge_detail(FuelGaugeDetail* out);
+
+// Issue SET_HIBERNATE (0x0011) to the BQ27220 Control() register. Drops the
+// gauge from active (~30–100 µA) to hibernate (~5–10 µA); state-of-charge
+// tracking is preserved and the chip wakes on the next I2C transaction.
+// Call right before deep sleep to minimize quiescent draw. No-op on boards
+// without a BQ27220.
+bool battery_hibernate_fuel_gauge();
