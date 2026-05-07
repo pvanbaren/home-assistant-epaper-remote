@@ -2,4 +2,9 @@
 .vscode
 sdkconfig.*
 src/config_remote.cpp
+*.bak
 src/assets/icons.h
+.mcp.json
+.claude/
+/.dummy/
+/managed_components/
