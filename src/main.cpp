@@ -1,6 +1,7 @@
 #include "boards.h"
 #include "config_remote.h"
 #include "constants.h"
+#include "managers/battery.h"
 #include "managers/home_assistant.h"
 #include "managers/touch.h"
 #include "managers/ui.h"
@@ -30,6 +31,7 @@ static SharedUIState shared_ui_state;
 static UITaskArgs ui_task_args;
 static TouchTaskArgs touch_task_args;
 static HomeAssistantTaskArgs hass_task_args;
+static BatteryTaskArgs battery_task_args;
 
 static volatile TaskHandle_t s_main_task_handle = nullptr;
 static volatile bool s_home_button_pending = false;
@@ -144,6 +146,10 @@ void setup() {
     touch_task_args.state = &shared_ui_state;
     touch_task_args.store = &store;
     xTaskCreate(touch_task, "touch", 4096, &touch_task_args, 1, nullptr);
+
+    // Launch battery monitor (no-op on boards with BATTERY_ADC_PIN < 0).
+    battery_task_args.store = &store;
+    xTaskCreate(battery_task, "battery", 4096, &battery_task_args, 1, nullptr);
 
     if (HOME_BUTTON_PIN >= 0) {
         if (HOME_BUTTON_ACTIVE_LOW) {
