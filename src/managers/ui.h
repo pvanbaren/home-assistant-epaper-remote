@@ -12,3 +12,4 @@ struct UITaskArgs {
 };
 
 void ui_task(void* arg);
+void ui_draw_standby_screen(FASTEPD* epaper);

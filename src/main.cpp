@@ -13,6 +13,7 @@
 #include <Arduino.h>
 #include <FastEPD.h>
 #include <driver/gpio.h>
+#include <driver/rtc_io.h>
 #include <esp_log.h>
 #include <esp_pm.h>
 #include <esp_sleep.h>
@@ -41,6 +42,43 @@ static void IRAM_ATTR home_button_isr() {
         portYIELD_FROM_ISR(hpw);
     }
 }
+
+#if defined(ENABLE_DEEP_SLEEP_STANDBY)
+static void enter_deep_sleep() {
+    if (HOME_BUTTON_PIN < 0) {
+        // No wake source on this board; do not deep sleep — it would brick
+        // the device until external reset.
+        return;
+    }
+    if (!rtc_gpio_is_valid_gpio(static_cast<gpio_num_t>(HOME_BUTTON_PIN))) {
+        ESP_LOGW(TAG, "HOME_BUTTON_PIN %d is not RTC-capable; skipping deep sleep", HOME_BUTTON_PIN);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Entering deep sleep (wake on BOOT button, GPIO %d)", HOME_BUTTON_PIN);
+
+    // Paint the "Press to wake ->" screen right before powering down so the
+    // panel ends in a clear, hint-bearing state for the duration of the sleep.
+    ui_draw_standby_screen(&epaper);
+    epaper.fullUpdate(CLEAR_FAST, true);
+    epaper.einkPower(false);
+
+    const auto pin = static_cast<gpio_num_t>(HOME_BUTTON_PIN);
+    rtc_gpio_init(pin);
+    rtc_gpio_set_direction(pin, RTC_GPIO_MODE_INPUT_ONLY);
+    if (HOME_BUTTON_ACTIVE_LOW) {
+        rtc_gpio_pullup_en(pin);
+        rtc_gpio_pulldown_dis(pin);
+        esp_sleep_enable_ext0_wakeup(pin, 0);
+    } else {
+        rtc_gpio_pullup_dis(pin);
+        rtc_gpio_pulldown_en(pin);
+        esp_sleep_enable_ext0_wakeup(pin, 1);
+    }
+
+    esp_deep_sleep_start();
+}
+#endif
 
 void setup() {
     // Bluetooth is unused; release the controller so the BT phy can stay off.
@@ -142,4 +180,10 @@ void loop() {
         ESP_LOGI(TAG, "Home button pressed");
         store_go_home(&store);
     }
+
+#if defined(ENABLE_DEEP_SLEEP_STANDBY)
+    if (store_should_deep_sleep(&store, millis())) {
+        enter_deep_sleep();
+    }
+#endif
 }

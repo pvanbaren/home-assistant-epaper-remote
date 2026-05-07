@@ -24,7 +24,9 @@ void drawCenteredIconWithText(FASTEPD* epaper, const uint8_t* icon, const char* 
     // Draw the icon
     const int icon_x = DISPLAY_WIDTH / 2 - 256 / 2;
     uint16_t cursor_y = DISPLAY_HEIGHT / 2 - (256 + icon_spacing + text_height) / 2;
-    epaper->loadBMP(icon, icon_x, cursor_y, 0xf, BBEP_BLACK);
+    // 1 bpp setPixelFast does an exact == BBEP_WHITE check; passing the
+    // 4 bpp "brightest grey" 0xf renders every pixel as black.
+    epaper->loadBMP(icon, icon_x, cursor_y, BBEP_WHITE, BBEP_BLACK);
 
     // Draw each line
     cursor_y += icon_spacing + 256;
