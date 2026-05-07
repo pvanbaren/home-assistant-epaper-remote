@@ -4,13 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 
-// Buttons configuration
-constexpr uint8_t BUTTON_BORDER_SIZE = 4;
-constexpr uint8_t BUTTON_SIZE = 100;
-constexpr uint8_t BUTTON_ICON_SIZE = 64;
-constexpr uint8_t SLIDER_OFFSET = 100;    // The zero is a bit on the right
-constexpr uint8_t TOUCH_AREA_MARGIN = 20; // Larger touch target for easier tapping
-
 // Home assistant configuration
 constexpr uint32_t HASS_MAX_JSON_BUFFER = 1024 * 256; // 256k, area/entity registries can be large
 constexpr uint32_t HASS_RECONNECT_DELAY_MS = 10000;
@@ -30,16 +23,6 @@ constexpr size_t   MEDIA_COMMAND_QUEUE_SIZE = 8;
 constexpr uint32_t HASS_IGNORE_UPDATE_DELAY_MS = 1000;
 
 // Other constants
-constexpr size_t MAX_ENTITIES = 128;
-constexpr size_t MAX_DEVICE_MAPPINGS = 512;
-constexpr size_t MAX_WIDGETS_PER_SCREEN = 16;
-constexpr size_t MAX_FLOORS = 16;
-constexpr size_t MAX_ROOMS = 32;
-constexpr size_t MAX_ENTITY_ID_LEN = 96;
-constexpr size_t MAX_ENTITY_NAME_LEN = 40;
-constexpr size_t MAX_ICON_NAME_LEN = 64;
-constexpr size_t MAX_FLOOR_NAME_LEN = 40;
-constexpr size_t MAX_ROOM_NAME_LEN = 40;
 constexpr size_t MAX_WIFI_NETWORKS = 24;
 constexpr uint8_t MAX_WIFI_SAVED_NETWORKS = 8;
 constexpr size_t MAX_WIFI_SSID_LEN = 33;
@@ -53,31 +36,14 @@ constexpr uint32_t DISPLAY_FULL_REDRAW_TIMEOUT_MS = 15000;
 constexpr uint8_t DISPLAY_PARTIAL_UPDATE_PASSES = 2;
 constexpr uint8_t DISPLAY_FULL_UPDATE_PASSES = 4;
 constexpr uint32_t STANDBY_IDLE_TIMEOUT_MS = 60000;       // 1 minute
-constexpr uint32_t STANDBY_REFRESH_INTERVAL_MS = 3600000; // 1 hour
 constexpr uint32_t DEEP_SLEEP_AFTER_STANDBY_MS = 300000;  // 5 minutes
 constexpr uint32_t BATTERY_REFRESH_INTERVAL_MS = 20000;   // 20 s between battery samples
 constexpr uint16_t BATTERY_FULL_MV = 4200;
 constexpr uint16_t BATTERY_EMPTY_MV = 3300;
 
-// Floor/room list UI geometry
-constexpr uint16_t ROOM_LIST_TITLE_Y = 40;
-constexpr uint8_t ROOM_LIST_COLUMNS = 2;
-constexpr uint8_t ROOM_LIST_ROWS = 4;
-constexpr uint8_t ROOM_LIST_ROOMS_PER_PAGE = ROOM_LIST_COLUMNS * ROOM_LIST_ROWS;
-constexpr uint16_t FLOOR_LIST_GRID_START_Y = 120;
-constexpr uint16_t ROOM_LIST_HEADER_HEIGHT = 100;
-constexpr uint16_t ROOM_LIST_GRID_START_Y = ROOM_LIST_HEADER_HEIGHT + 12;
-constexpr uint16_t ROOM_LIST_GRID_BOTTOM_Y = 860;
-constexpr uint16_t ROOM_LIST_GRID_MARGIN_X = 20;
-constexpr uint16_t ROOM_LIST_GRID_GAP_X = 16;
-constexpr uint16_t ROOM_LIST_GRID_GAP_Y = 16;
-constexpr uint16_t ROOM_LIST_FOOTER_Y = 920;
+// Paginated list swipe (used by the Wi-Fi network list).
 constexpr uint16_t ROOM_LIST_SWIPE_THRESHOLD_X = 80;
-constexpr uint16_t ROOM_LIST_TILE_ICON_SIZE = 64;
-constexpr uint16_t ROOM_LIST_TILE_ICON_TOP_PADDING = 10;
-constexpr uint16_t ROOM_LIST_TILE_ICON_LABEL_GAP = 10;
-constexpr uint16_t ROOM_LIST_TILE_LABEL_BOTTOM_PADDING = 8;
-constexpr uint16_t ROOM_LIST_TILE_RADIUS = 18;
+
 // Media controller geometry
 constexpr int16_t MEDIA_MARGIN_X = 20;
 constexpr int16_t MEDIA_BUTTON_GAP = 12;
@@ -108,17 +74,8 @@ constexpr uint16_t HOME_RIGHT_BUTTON_Y = 18;
 constexpr uint16_t HOME_RIGHT_BUTTON_W = 64;
 constexpr uint16_t HOME_RIGHT_BUTTON_H = 64;
 
-// Room controls UI geometry
-constexpr uint16_t ROOM_CONTROLS_HEADER_HEIGHT = 110;
-constexpr uint16_t ROOM_CONTROLS_ITEM_START_Y = 130;
-constexpr uint16_t ROOM_CONTROLS_LIGHT_HEIGHT = (BUTTON_SIZE + 50) * 13 / 10;      // +30%
-constexpr uint16_t ROOM_CONTROLS_LIGHT_MIN_HEIGHT = 96;                              // Keep enough room for icon + label
-constexpr uint16_t ROOM_CONTROLS_CLIMATE_HEIGHT = (BUTTON_SIZE * 2 + 40) * 13 / 10; // +30%
-constexpr uint16_t ROOM_CONTROLS_COVER_HEIGHT = (BUTTON_SIZE + 40) * 13 / 10;       // +30%
-constexpr uint16_t ROOM_CONTROLS_ITEM_GAP = 20;
-constexpr uint16_t ROOM_CONTROLS_LIGHT_COLUMN_GAP = 20;
-constexpr uint16_t ROOM_CONTROLS_ITEM_X = 30;
-constexpr uint16_t ROOM_CONTROLS_BOTTOM_PADDING = 12;
+// Back-button hit region used by the Wi-Fi settings / password screens
+// (legacy "ROOM_CONTROLS" prefix kept for now).
 constexpr uint16_t ROOM_CONTROLS_BACK_X = 20;
 constexpr uint16_t ROOM_CONTROLS_BACK_Y = 25;
 constexpr uint16_t ROOM_CONTROLS_BACK_W = 120;
