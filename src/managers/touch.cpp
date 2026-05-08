@@ -6,6 +6,7 @@
 #include "constants.h"
 #include <Arduino.h>
 #include <Wire.h>
+#include <cstring>
 #include <driver/gpio.h>
 
 static const char* TAG = "touch";
@@ -192,49 +193,170 @@ static bool detect_gt911_address(uint8_t* out_addr) {
     return false;
 }
 
-// GT911 INT trigger modes (MODULE_SWITCH_1 register, bits 0-1):
-//   0x00 = rising edge,  0x01 = falling edge,
-//   0x02 = low level query,  0x03 = high level query.
-// LOW_LEVEL_QUERY holds INT low until the host reads the data — convenient for
-// polling, but unworkable for light-sleep wake: the level-triggered GPIO wake
-// keeps re-firing gpio_intr_service while INT stays low, faster than the
-// touch task can wake and drain GT911, tripping IWDT. FALLING_EDGE pulses INT
-// briefly on each event then releases it high — the pulse triggers the
-// level-low wake but level returns high before gpio_intr_service can spin.
+// Persistently commit MODULE_SWITCH_1 (0x804D) to the GT911's stored config:
+// INT_TRIGGER (bits 0-1) := mode_bits, X2Y (bit 3) := 0, FlipX (bit 6) := 0,
+// FlipY (bit 7) := 0.
+// All other bits in MODULE_SWITCH_1 and the rest of the 184-byte config block
+// are preserved.
+// Idempotent — if the desired bits already match, returns success without
+// touching the chip.
+//
+// Why persistent rather than runtime: GT911 config registers (0x8047-0x80FE)
+// are shadow RAM; the chip only honors writes there when paired with a valid
+// checksum at 0x80FF and CFG_FRESH=1 at 0x8100. Without that handshake, the
+// I2C writes appear to succeed but the chip keeps running off whatever it
+// loaded from non-volatile config at power-on — which is what bit us before.
+//
+// Safety net (we corrupted the chip the first time we tried this): the
+// 184-byte config block is read twice, and we require both copies AND the
+// stored checksum to all match before touching anything. CFG_VERSION is also
+// bumped, since most GT911 firmwares only persist a config whose version is
+// strictly greater than the stored one.
+//
+// INT mode rationale: LOW_LEVEL_QUERY holds INT low until the host reads the
+// data — convenient for polling, but unworkable for light-sleep wake: the
+// level-triggered GPIO wake keeps re-firing gpio_intr_service while INT
+// stays low, faster than the touch task can wake and drain GT911, tripping
+// IWDT. FALLING_EDGE pulses INT briefly on each event then releases it high
+// — the pulse triggers the level-low wake but level returns high before
+// gpio_intr_service can spin.
 static bool configure_gt911_int_mode(uint8_t addr, uint8_t mode_bits) {
-    constexpr uint16_t GT911_CFG_START_REG = 0x8047;
+    constexpr uint16_t GT911_CFG_START_REG       = 0x8047;
+    constexpr uint16_t GT911_X_OUTPUT_MAX_REG    = 0x8048; // 2 bytes, little-endian
+    constexpr uint16_t GT911_Y_OUTPUT_MAX_REG    = 0x804A; // 2 bytes, little-endian
     constexpr uint16_t GT911_MODULE_SWITCH_1_REG = 0x804D;
-    constexpr uint16_t GT911_CFG_CHECKSUM_REG = 0x80FF;
-    constexpr uint16_t GT911_CFG_FRESH_REG = 0x8100;
+    constexpr uint16_t GT911_CFG_CHECKSUM_REG    = 0x80FF;
+    constexpr uint16_t GT911_CFG_FRESH_REG       = 0x8100;
+    constexpr size_t   GT911_CFG_LEN             = 184;
+    constexpr uint8_t  GT911_INT_MASK            = 0x03; // bits 0-1
+    constexpr uint8_t  GT911_X2Y_BIT             = 0x08; // bit 3
+    constexpr uint8_t  GT911_FLIPX_BIT           = 0x40; // bit 6
+    constexpr uint8_t  GT911_FLIPY_BIT           = 0x80; // bit 7
+    // Chip's stored factory defaults for this LilyGO panel — confirmed via
+    // gt911_dump_config(). We don't modify these; the values are here so
+    // the fast-path can detect a chip that's been reset/replaced.
+    constexpr uint16_t kExpectedXMax             = 540;
+    constexpr uint16_t kExpectedYMax             = 960;
 
-    uint8_t module_switch = 0;
-    if (!i2c_read_reg16(addr, GT911_MODULE_SWITCH_1_REG, &module_switch, 1)) {
+    // Fast-path: read just the bits we care about (MODULE_SWITCH_1 + the
+    // X/Y_OUTPUT_MAX values). If everything is already in the expected
+    // state, skip the 184-byte read + checksum-recompute + commit. On
+    // hardware that doesn't persist commits to flash this never matches
+    // and we fall through; on hardware that does, it short-circuits the
+    // commit on every boot after the first.
+    {
+        uint8_t  current_module_switch_1 = 0;
+        uint8_t  xy_buf[4]               = {0};
+        if (i2c_read_reg16(addr, GT911_MODULE_SWITCH_1_REG, &current_module_switch_1, 1) &&
+            i2c_read_reg16(addr, GT911_X_OUTPUT_MAX_REG,    xy_buf,                   4)) {
+            const uint16_t current_x = static_cast<uint16_t>(xy_buf[0]) | (static_cast<uint16_t>(xy_buf[1]) << 8);
+            const uint16_t current_y = static_cast<uint16_t>(xy_buf[2]) | (static_cast<uint16_t>(xy_buf[3]) << 8);
+            constexpr uint8_t kCheckMask = GT911_INT_MASK | GT911_X2Y_BIT | GT911_FLIPX_BIT | GT911_FLIPY_BIT;
+            const uint8_t expected_controlled = static_cast<uint8_t>(mode_bits & GT911_INT_MASK);
+            if ((current_module_switch_1 & kCheckMask) == expected_controlled &&
+                current_x == kExpectedXMax &&
+                current_y == kExpectedYMax) {
+                ESP_LOGI(TAG,
+                         "configure_gt911_int_mode: already configured (MODULE_SWITCH_1=0x%02X X_MAX=%u Y_MAX=%u) — skipping commit",
+                         current_module_switch_1, current_x, current_y);
+                return true;
+            }
+        }
+    }
+
+    // Two independent reads of the entire config block. If they don't agree,
+    // the I2C bus glitched somewhere — bail rather than commit garbage.
+    uint8_t cfg_a[GT911_CFG_LEN] = {0};
+    uint8_t cfg_b[GT911_CFG_LEN] = {0};
+    if (!i2c_read_reg16_block(addr, GT911_CFG_START_REG, cfg_a, sizeof(cfg_a))) {
+        ESP_LOGE(TAG, "configure_gt911_int_mode: failed to read config block (1st)");
         return false;
     }
-    const uint8_t desired_mode = static_cast<uint8_t>((module_switch & 0xFC) | (mode_bits & 0x03));
-
-    if (!i2c_write_reg16(addr, GT911_MODULE_SWITCH_1_REG, desired_mode)) {
+    if (!i2c_read_reg16_block(addr, GT911_CFG_START_REG, cfg_b, sizeof(cfg_b))) {
+        ESP_LOGE(TAG, "configure_gt911_int_mode: failed to read config block (2nd)");
+        return false;
+    }
+    if (memcmp(cfg_a, cfg_b, sizeof(cfg_a)) != 0) {
+        ESP_LOGE(TAG, "configure_gt911_int_mode: config-block reads differ — refusing to commit");
         return false;
     }
 
-    uint8_t config[184] = {0};
-    if (!i2c_read_reg16_block(addr, GT911_CFG_START_REG, config, sizeof(config))) {
+    uint8_t stored_checksum = 0;
+    if (!i2c_read_reg16(addr, GT911_CFG_CHECKSUM_REG, &stored_checksum, 1)) {
+        ESP_LOGE(TAG, "configure_gt911_int_mode: failed to read stored checksum");
         return false;
     }
-    config[GT911_MODULE_SWITCH_1_REG - GT911_CFG_START_REG] = desired_mode;
-
-    uint8_t checksum = 0;
-    for (size_t i = 0; i < sizeof(config); i++) {
-        checksum = static_cast<uint8_t>(checksum + config[i]);
+    uint8_t computed = 0;
+    for (size_t i = 0; i < sizeof(cfg_a); i++) {
+        computed = static_cast<uint8_t>(computed + cfg_a[i]);
     }
-    checksum = static_cast<uint8_t>(~checksum + 1);
+    computed = static_cast<uint8_t>(~computed + 1);
+    if (computed != stored_checksum) {
+        ESP_LOGE(TAG, "configure_gt911_int_mode: checksum mismatch (stored=0x%02X computed=0x%02X) — refusing to write",
+                 stored_checksum, computed);
+        return false;
+    }
 
-    if (!i2c_write_reg16(addr, GT911_CFG_CHECKSUM_REG, checksum)) {
+    constexpr size_t kModuleSwitch1Offset = GT911_MODULE_SWITCH_1_REG - GT911_CFG_START_REG;
+    const uint8_t old_module_switch_1 = cfg_a[kModuleSwitch1Offset];
+    const uint8_t new_module_switch_1 = static_cast<uint8_t>(
+        (old_module_switch_1 & ~(GT911_INT_MASK | GT911_X2Y_BIT | GT911_FLIPX_BIT | GT911_FLIPY_BIT)) |
+        (mode_bits & GT911_INT_MASK));
+    if (old_module_switch_1 == new_module_switch_1) {
+        ESP_LOGI(TAG, "configure_gt911_int_mode: MODULE_SWITCH_1 already 0x%02X, nothing to commit",
+                 old_module_switch_1);
+        return true;
+    }
+    cfg_a[kModuleSwitch1Offset] = new_module_switch_1;
+
+    // Bump CFG_VERSION so the chip accepts the new config. Many GT911
+    // firmwares silently reject same/lower versions: the runtime registers
+    // get touched, but RST reloads the previous stored config.
+    const uint8_t old_version = cfg_a[0];
+    cfg_a[0] = static_cast<uint8_t>(old_version + 1);
+
+    uint8_t new_checksum = 0;
+    for (size_t i = 0; i < sizeof(cfg_a); i++) {
+        new_checksum = static_cast<uint8_t>(new_checksum + cfg_a[i]);
+    }
+    new_checksum = static_cast<uint8_t>(~new_checksum + 1);
+
+    ESP_LOGI(TAG, "configure_gt911_int_mode: MODULE_SWITCH_1 0x%02X -> 0x%02X, version 0x%02X -> 0x%02X, checksum 0x%02X -> 0x%02X",
+             old_module_switch_1, new_module_switch_1,
+             old_version, cfg_a[0],
+             stored_checksum, new_checksum);
+
+    // Write the whole config block in chunks small enough for the I2C tx
+    // buffer (Arduino default is 32 bytes incl. address). Writing the
+    // entire block (rather than just MODULE_SWITCH_1) ensures the runtime
+    // config exactly matches the bytes we computed the checksum for.
+    constexpr size_t kChunk = 16;
+    for (size_t offset = 0; offset < sizeof(cfg_a); offset += kChunk) {
+        const size_t len = (sizeof(cfg_a) - offset < kChunk) ? (sizeof(cfg_a) - offset) : kChunk;
+        const uint16_t reg = static_cast<uint16_t>(GT911_CFG_START_REG + offset);
+        Wire.beginTransmission(addr);
+        Wire.write(static_cast<uint8_t>(reg >> 8));
+        Wire.write(static_cast<uint8_t>(reg & 0xFF));
+        for (size_t i = 0; i < len; i++) {
+            Wire.write(cfg_a[offset + i]);
+        }
+        if (Wire.endTransmission() != 0) {
+            ESP_LOGE(TAG, "configure_gt911_int_mode: config-block write failed at offset %u", static_cast<unsigned>(offset));
+            return false;
+        }
+    }
+    if (!i2c_write_reg16(addr, GT911_CFG_CHECKSUM_REG, new_checksum)) {
+        ESP_LOGE(TAG, "configure_gt911_int_mode: failed to write checksum");
         return false;
     }
     if (!i2c_write_reg16(addr, GT911_CFG_FRESH_REG, 0x01)) {
+        ESP_LOGE(TAG, "configure_gt911_int_mode: failed to write CFG_FRESH");
         return false;
     }
+    // CFG_FRESH=1 triggers the chip to re-validate the checksum and apply
+    // the new config. We deliberately do NOT pulse RST — RST reloads from
+    // internal storage, which would clobber the runtime change since this
+    // hardware doesn't actually persist the commit to flash.
     return true;
 }
 
