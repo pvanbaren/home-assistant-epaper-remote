@@ -6,6 +6,7 @@
 #include "managers/touch.h"
 #include "managers/ui.h"
 #include "managers/wifi.h"
+#include <WiFi.h>
 #include "pm_lock.h"
 #include "store.h"
 #include "ui_state.h"
@@ -55,6 +56,12 @@ static void enter_deep_sleep() {
     }
 
     ESP_LOGI(TAG, "Entering deep sleep (wake on BOOT button, GPIO %d)", HOME_BUTTON_PIN);
+
+    // Tear down network state cleanly before the radios get powered off.
+    // Without this the WebSocket TCP socket dies abruptly and HA holds a
+    // half-open session until its keepalive timer expires (~30-60 s).
+    home_assistant_shutdown();
+    WiFi.disconnect(true, false);
 
     // Paint the "Press to wake ->" screen right before powering down so the
     // panel ends in a clear, hint-bearing state for the duration of the sleep.

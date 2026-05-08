@@ -29,6 +29,12 @@ typedef struct home_assistant_context {
 
 static const char* TAG = "home_assistant";
 
+// Live websocket handle, captured once the task has connected. Used by
+// home_assistant_shutdown() to send a clean close frame before deep sleep
+// tears down WiFi underneath us. nullptr until launch_hass has progressed
+// far enough to construct the client.
+static esp_websocket_client_handle_t s_hass_client = nullptr;
+
 static void hass_update_state(home_assistant_context_t* hass, ConnState state) {
     xSemaphoreTake(hass->mutex, portMAX_DELAY);
     ConnState previous_state = hass->state;
@@ -253,6 +259,7 @@ void home_assistant_task(void* arg) {
     hass->store = store;
     hass->config = ctx->config;
     hass->client = esp_websocket_client_init(&client_config);
+    s_hass_client = hass->client;
     hass->mutex = xSemaphoreCreateMutex();
     hass->task = xTaskGetCurrentTaskHandle();
     hass->json_buffer_cap = HASS_MAX_JSON_BUFFER;
@@ -314,4 +321,15 @@ void home_assistant_task(void* arg) {
             }
         }
     }
+}
+
+void home_assistant_shutdown() {
+    if (s_hass_client == nullptr) {
+        return;
+    }
+    // Send the WebSocket close frame and wait briefly for the server to
+    // ack. Without this the TCP socket dies abruptly on WiFi teardown and
+    // HA's server holds the half-open session until its keepalive expires.
+    esp_err_t err = esp_websocket_client_close(s_hass_client, pdMS_TO_TICKS(500));
+    ESP_LOGI(TAG, "home_assistant_shutdown: close returned %s", esp_err_to_name(err));
 }
