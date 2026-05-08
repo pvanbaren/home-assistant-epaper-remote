@@ -83,6 +83,103 @@ static bool i2c_read_reg16_block(uint8_t addr, uint16_t reg, uint8_t* buf, size_
     return true;
 }
 
+// Read the full 184-byte GT911 config block + checksum and dump it to the
+// log. Decodes the well-known fields (CFG_VERSION, X_OUTPUT_MAX,
+// Y_OUTPUT_MAX, TOUCH_NUMBER, MODULE_SWITCH_1/2, REFRESH_RATE, screen-touch
+// thresholds) and prints the rest as a hex dump. Useful for verifying the
+// chip is at expected factory defaults vs. a corrupted stored config.
+static void gt911_dump_config(uint8_t addr) {
+    constexpr uint16_t GT911_CFG_START_REG    = 0x8047;
+    constexpr uint16_t GT911_CFG_CHECKSUM_REG = 0x80FF;
+    constexpr size_t   GT911_CFG_LEN          = 184;
+
+    uint8_t cfg[GT911_CFG_LEN] = {0};
+    if (!i2c_read_reg16_block(addr, GT911_CFG_START_REG, cfg, sizeof(cfg))) {
+        ESP_LOGE(TAG, "gt911_dump_config: failed to read config block");
+        return;
+    }
+    uint8_t stored_checksum = 0;
+    if (!i2c_read_reg16(addr, GT911_CFG_CHECKSUM_REG, &stored_checksum, 1)) {
+        ESP_LOGE(TAG, "gt911_dump_config: failed to read checksum");
+    }
+    uint8_t computed = 0;
+    for (size_t i = 0; i < sizeof(cfg); i++) {
+        computed = static_cast<uint8_t>(computed + cfg[i]);
+    }
+    computed = static_cast<uint8_t>(~computed + 1);
+
+    // Decode well-known fields. Offsets are relative to 0x8047.
+    const uint8_t  cfg_version      = cfg[0x00];
+    const uint16_t x_output_max     = static_cast<uint16_t>(cfg[0x01]) | (static_cast<uint16_t>(cfg[0x02]) << 8);
+    const uint16_t y_output_max     = static_cast<uint16_t>(cfg[0x03]) | (static_cast<uint16_t>(cfg[0x04]) << 8);
+    const uint8_t  touch_number     = cfg[0x05];
+    const uint8_t  module_switch_1  = cfg[0x06];
+    const uint8_t  module_switch_2  = cfg[0x07];
+    const uint8_t  shake_count      = cfg[0x08];
+    const uint8_t  filter           = cfg[0x09];
+    const uint8_t  large_touch      = cfg[0x0A];
+    const uint8_t  noise_reduction  = cfg[0x0B];
+    const uint8_t  screen_touch_lvl = cfg[0x0C];
+    const uint8_t  screen_leave_lvl = cfg[0x0D];
+    const uint8_t  low_power_ctrl   = cfg[0x0E];
+    const uint8_t  refresh_rate     = cfg[0x0F];
+    const uint8_t  x_threshold      = cfg[0x10];
+    const uint8_t  y_threshold      = cfg[0x11];
+
+    ESP_LOGI(TAG, "GT911 config @ 0x%02X (len=%u, stored cksum=0x%02X computed=0x%02X %s)",
+             addr, static_cast<unsigned>(sizeof(cfg)),
+             stored_checksum, computed,
+             (stored_checksum == computed) ? "OK" : "MISMATCH");
+    ESP_LOGI(TAG, "  CFG_VERSION       = 0x%02X (%u)", cfg_version, cfg_version);
+    ESP_LOGI(TAG, "  X_OUTPUT_MAX      = %u",   x_output_max);
+    ESP_LOGI(TAG, "  Y_OUTPUT_MAX      = %u",   y_output_max);
+    ESP_LOGI(TAG, "  TOUCH_NUMBER      = %u",   touch_number & 0x0F);
+    // MODULE_SWITCH_1 (0x804D) bit layout per Goodix programming guide /
+    // common GT9xx driver interpretation:
+    //   b1:0 INT_TRIGGER (0=rising, 1=falling, 2=low, 3=high)
+    //   b2   SITO
+    //   b3   X2Y       — swap X/Y output
+    //   b4   Stretch_Rank
+    //   b5   reserved
+    //   b6   FlipX      — X reverse / mirror
+    //   b7   FlipY      — Y reverse / mirror
+    // GT911 datasheets formally list b4-b7 as reserved, but firmware variants
+    // on these panels commonly populate b6/b7 for axis flip, so report them.
+    ESP_LOGI(TAG, "  MODULE_SWITCH_1   = 0x%02X (INT_TRIG=%u SITO=%u X2Y=%u Stretch=%u FlipX=%u FlipY=%u)",
+             module_switch_1,
+             static_cast<unsigned>(module_switch_1 & 0x03),
+             static_cast<unsigned>((module_switch_1 >> 2) & 0x01),
+             static_cast<unsigned>((module_switch_1 >> 3) & 0x01),
+             static_cast<unsigned>((module_switch_1 >> 4) & 0x01),
+             static_cast<unsigned>((module_switch_1 >> 6) & 0x01),
+             static_cast<unsigned>((module_switch_1 >> 7) & 0x01));
+    ESP_LOGI(TAG, "  MODULE_SWITCH_2   = 0x%02X", module_switch_2);
+    ESP_LOGI(TAG, "  SHAKE_COUNT       = 0x%02X", shake_count);
+    ESP_LOGI(TAG, "  FILTER            = 0x%02X", filter);
+    ESP_LOGI(TAG, "  LARGE_TOUCH       = 0x%02X", large_touch);
+    ESP_LOGI(TAG, "  NOISE_REDUCTION   = 0x%02X", noise_reduction);
+    ESP_LOGI(TAG, "  SCREEN_TOUCH_LVL  = 0x%02X", screen_touch_lvl);
+    ESP_LOGI(TAG, "  SCREEN_LEAVE_LVL  = 0x%02X", screen_leave_lvl);
+    ESP_LOGI(TAG, "  LOW_POWER_CTRL    = 0x%02X", low_power_ctrl);
+    ESP_LOGI(TAG, "  REFRESH_RATE      = 0x%02X (%u Hz)", refresh_rate, 5 + (refresh_rate & 0x0F));
+    ESP_LOGI(TAG, "  X_THRESHOLD       = 0x%02X", x_threshold);
+    ESP_LOGI(TAG, "  Y_THRESHOLD       = 0x%02X", y_threshold);
+
+    // Hex dump of the whole block, 16 bytes per line, with the register
+    // address at the start of each line.
+    char line[64];
+    for (size_t row = 0; row < sizeof(cfg); row += 16) {
+        size_t pos = 0;
+        pos += snprintf(line + pos, sizeof(line) - pos, "  %04X:",
+                        static_cast<unsigned>(GT911_CFG_START_REG + row));
+        const size_t end = (row + 16 < sizeof(cfg)) ? row + 16 : sizeof(cfg);
+        for (size_t i = row; i < end; i++) {
+            pos += snprintf(line + pos, sizeof(line) - pos, " %02X", cfg[i]);
+        }
+        ESP_LOGI(TAG, "%s", line);
+    }
+}
+
 static bool detect_gt911_address(uint8_t* out_addr) {
     if (i2c_device_present(GT911_ADDR1)) {
         *out_addr = GT911_ADDR1;
@@ -540,6 +637,15 @@ void touch_task(void* arg) {
     uint8_t gt911_addr = 0;
     const bool gt911_addr_present = detect_gt911_address(&gt911_addr);
     const bool cst226_addr_present = i2c_device_present(CST226_ADDR);
+
+#if defined(GT911_DUMP_CONFIG_ON_BOOT)
+    if (gt911_addr_present) {
+        gt911_dump_config(gt911_addr);
+    } else {
+        ESP_LOGW(TAG, "GT911_DUMP_CONFIG_ON_BOOT: GT911 not detected, nothing to dump");
+    }
+#endif
+
     const bool poll_gt911_home = (type == CT_TYPE_GT911) || gt911_addr_present;
     const bool poll_cst226_home = (type == CT_TYPE_CST226) || cst226_addr_present;
     ESP_LOGI(TAG, "Touch home key polling: GT911=%d CST226=%d", poll_gt911_home ? 1 : 0, poll_cst226_home ? 1 : 0);
