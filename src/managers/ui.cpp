@@ -1,6 +1,7 @@
 #include "ui.h"
-#include "assets/Montserrat_Regular_16.h"
-#include "assets/Montserrat_Regular_20.h"
+#include "assets/Roboto_Condensed_Regular_10.h"
+#include "assets/Roboto_Condensed_Regular_16.h"
+#include "assets/Roboto_Condensed_Regular_20.h"
 #include "assets/Montserrat_Regular_26.h"
 #include "assets/icons.h"
 #include "boards.h"
@@ -36,7 +37,7 @@ static void draw_text_at(FASTEPD* epaper, int16_t x, int16_t y, const char* text
 
 static void ui_draw_connection_recovery_buttons(FASTEPD* epaper) {
     BB_RECT rect;
-    epaper->setFont(Montserrat_Regular_20);
+    epaper->setFont(Roboto_Condensed_Regular_20);
     // Montserrat sets the cursor at the baseline, so y = top + (h+rect.h)/2 - 4
     // (matches ui_draw_media_button).
 
@@ -211,7 +212,7 @@ static void ui_draw_battery_indicator(FASTEPD* epaper, int16_t right_edge_x, int
     char pct_text[8];
     snprintf(pct_text, sizeof(pct_text), "%u", static_cast<unsigned>(soc_pct));
 
-    epaper->setFont(FONT_8x8);
+    epaper->setFont(Roboto_Condensed_Regular_10);
     const BB_RECT text_rect = get_text_box(epaper, pct_text);
 
     // Stack vertically: nub on top, body, text below; right edge of the icon
@@ -229,10 +230,10 @@ static void ui_draw_battery_indicator(FASTEPD* epaper, int16_t right_edge_x, int
         epaper->fillRect(body_x + 2, body_y + body_h - 2 - fill_h, body_w - 4, fill_h, BBEP_BLACK);
     }
 
-    // FONT_8x8 cursor is top-left of the character (unlike the TTF Montserrat
-    // fonts where setCursor's y is the baseline).
+    // Montserrat sets the cursor at the baseline, so add text_rect.h to land
+    // the top of the glyphs at body_y + body_h + text_gap.
     const int16_t text_x = body_x + (body_w - text_rect.w) / 2;
-    const int16_t text_y = body_y + body_h + text_gap;
+    const int16_t text_y = body_y + body_h + text_gap + text_rect.h;
     draw_text_at(epaper, text_x, text_y, pct_text, true);
 }
 
@@ -240,7 +241,7 @@ static void ui_draw_media_button(FASTEPD* epaper, int16_t x, int16_t y, int16_t 
     epaper->fillRoundRect(x, y, w, h, MEDIA_BUTTON_RADIUS, BBEP_WHITE);
     epaper->drawRoundRect(x, y, w, h, MEDIA_BUTTON_RADIUS, BBEP_BLACK);
     if (label && label[0] != '\0') {
-        epaper->setFont(Montserrat_Regular_20);
+        epaper->setFont(Roboto_Condensed_Regular_20);
         const BB_RECT rect = get_text_box(epaper, label);
         const int16_t tx = x + (w - rect.w) / 2;
         const int16_t ty = y + (h + rect.h) / 2 - 4;
@@ -388,7 +389,7 @@ void ui_draw_media_device_select(FASTEPD* epaper, const Configuration* config, u
     ui_draw_settings_header(epaper, "Select device");
 
     if (!config || config->media_device_count == 0) {
-        epaper->setFont(Montserrat_Regular_20);
+        epaper->setFont(Roboto_Condensed_Regular_20);
         draw_text_at(epaper, MEDIA_MARGIN_X, SETTINGS_HEADER_HEIGHT + 60, "No devices configured");
         return;
     }
@@ -439,7 +440,7 @@ void ui_draw_battery_status(FASTEPD* epaper, const ChargerSnapshot* charger, con
     epaper->fillRoundRect(MEDIA_MARGIN_X, card_y, inner_w, card_h, 14, BBEP_WHITE);
     epaper->drawRoundRect(MEDIA_MARGIN_X, card_y, inner_w, card_h, 14, BBEP_BLACK);
 
-    epaper->setFont(Montserrat_Regular_20);
+    epaper->setFont(Roboto_Condensed_Regular_20);
     constexpr int16_t row_h = 56;
     const int16_t label_x = MEDIA_MARGIN_X + 24;
     const int16_t value_x = MEDIA_MARGIN_X + 240;
@@ -526,7 +527,7 @@ void ui_draw_battery_status(FASTEPD* epaper, const ChargerSnapshot* charger, con
     }
 
     if (!charger_ok) {
-        epaper->setFont(Montserrat_Regular_16);
+        epaper->setFont(Roboto_Condensed_Regular_16);
         draw_text_at(epaper, label_x, y, "Charger IC not detected.");
     }
 }
@@ -588,7 +589,7 @@ static void ui_draw_wifi_network_row(FASTEPD* epaper, int16_t x, int16_t y, int1
     epaper->fillRoundRect(x, y, w, WIFI_NETWORK_ROW_H, 12, BBEP_WHITE);
     epaper->drawRoundRect(x, y, w, WIFI_NETWORK_ROW_H, 12, BBEP_BLACK);
 
-    epaper->setFont(Montserrat_Regular_16);
+    epaper->setFont(Roboto_Condensed_Regular_16);
     char ssid[MAX_WIFI_SSID_LEN];
     strncpy(ssid, network.ssid, sizeof(ssid) - 1);
     ssid[sizeof(ssid) - 1] = '\0';
@@ -625,10 +626,10 @@ void ui_draw_wifi_settings(FASTEPD* epaper, const WifiSettingsSnapshot* snapshot
     // 26 px → 29 px between baselines (≈ +10%); first row baseline unchanged.
     constexpr int16_t info_first_y = 32;
     constexpr int16_t info_step_y = 29;
-    epaper->setFont(Montserrat_Regular_20);
+    epaper->setFont(Roboto_Condensed_Regular_20);
     draw_text_at(epaper, WIFI_INFO_X + 14, WIFI_INFO_Y + info_first_y, ui_wifi_state_label(snapshot->wifi_state, snapshot->connecting));
 
-    epaper->setFont(Montserrat_Regular_16);
+    epaper->setFont(Roboto_Condensed_Regular_16);
     char profile_line[96];
     if (snapshot->custom_profile_active && snapshot->profile_ssid[0] != '\0') {
         snprintf(profile_line, sizeof(profile_line), "Profile: Custom (%s)", snapshot->profile_ssid);
@@ -660,7 +661,7 @@ void ui_draw_wifi_settings(FASTEPD* epaper, const WifiSettingsSnapshot* snapshot
 
     epaper->fillRoundRect(WIFI_SCAN_BUTTON_X, WIFI_SCAN_BUTTON_Y, WIFI_SCAN_BUTTON_W, WIFI_SCAN_BUTTON_H, 10, BBEP_WHITE);
     epaper->drawRoundRect(WIFI_SCAN_BUTTON_X, WIFI_SCAN_BUTTON_Y, WIFI_SCAN_BUTTON_W, WIFI_SCAN_BUTTON_H, 10, BBEP_BLACK);
-    epaper->setFont(Montserrat_Regular_16);
+    epaper->setFont(Roboto_Condensed_Regular_16);
     BB_RECT scan_rect = get_text_box(epaper, "Scan");
     draw_text_at(epaper, WIFI_SCAN_BUTTON_X + (WIFI_SCAN_BUTTON_W - scan_rect.w) / 2,
                  WIFI_SCAN_BUTTON_Y + (WIFI_SCAN_BUTTON_H + scan_rect.h) / 2 - 2, "Scan");
@@ -685,7 +686,7 @@ void ui_draw_wifi_settings(FASTEPD* epaper, const WifiSettingsSnapshot* snapshot
     const uint8_t last_idx = std::min<uint8_t>(snapshot->network_count, static_cast<uint8_t>(first_idx + WIFI_NETWORKS_PER_PAGE));
 
     if (snapshot->network_count == 0) {
-        epaper->setFont(Montserrat_Regular_16);
+        epaper->setFont(Roboto_Condensed_Regular_16);
         draw_text_at(epaper, WIFI_NETWORK_LIST_X + 4, WIFI_NETWORK_LIST_Y + 30, "No networks found. Tap Scan.");
     } else {
         for (uint8_t idx = first_idx; idx < last_idx; idx++) {
@@ -719,7 +720,7 @@ static void ui_draw_key(FASTEPD* epaper, int16_t x, int16_t y, int16_t w, int16_
 void ui_draw_wifi_password(FASTEPD* epaper, const WifiPasswordSnapshot* snapshot) {
     epaper->setTextColor(BBEP_BLACK);
     ui_draw_settings_header(epaper, "Wi-Fi Password");
-    epaper->setFont(Montserrat_Regular_16);
+    epaper->setFont(Roboto_Condensed_Regular_16);
 
     epaper->fillRoundRect(WIFI_PASSWORD_BOX_X, WIFI_PASSWORD_BOX_Y, WIFI_PASSWORD_BOX_W, WIFI_PASSWORD_BOX_H, 14, BBEP_WHITE);
     epaper->drawRoundRect(WIFI_PASSWORD_BOX_X, WIFI_PASSWORD_BOX_Y, WIFI_PASSWORD_BOX_W, WIFI_PASSWORD_BOX_H, 14, BBEP_BLACK);
