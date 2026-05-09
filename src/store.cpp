@@ -489,12 +489,15 @@ void store_poll_standby_timeout(EntityStore* store, uint32_t now_ms) {
                               store->home_assistant == ConnState::Up;
     const bool idle_timed_out = static_cast<uint32_t>(now_ms - store->last_interaction_ms) >= STANDBY_IDLE_TIMEOUT_MS;
     bool changed = false;
+    bool entered_standby = false;
+    bool left_standby = false;
 
     if (store->standby_active) {
         if (!can_activate) {
             store->standby_active = false;
             store->standby_revision++;
             changed = true;
+            left_standby = true;
         }
     } else if (can_activate && idle_timed_out) {
         store->standby_active = true;
@@ -502,9 +505,15 @@ void store_poll_standby_timeout(EntityStore* store, uint32_t now_ms) {
         store->standby_last_refresh_ms = now_ms;
         store->standby_revision++;
         changed = true;
+        entered_standby = true;
     }
 
     xSemaphoreGive(store->mutex);
+    if (entered_standby) {
+        ESP_LOGI(TAG, "Idle timeout reached, entering standby");
+    } else if (left_standby) {
+        ESP_LOGI(TAG, "Connection dropped, leaving standby");
+    }
     if (changed) {
         notify_ui(store);
     }

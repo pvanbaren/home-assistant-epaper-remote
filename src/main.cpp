@@ -193,6 +193,7 @@ void loop() {
 
 #if defined(ENABLE_DEEP_SLEEP_STANDBY)
     if (store_should_deep_sleep(&store, millis())) {
+        ESP_LOGI(TAG, "Standby timeout reached, entering deep sleep");
         enter_deep_sleep();
     }
 #endif

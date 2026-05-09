@@ -788,6 +788,16 @@ void ui_task(void* arg) {
     UITaskArgs* ctx = static_cast<UITaskArgs*>(arg);
     UIState current_state = {};
     UIState displayed_state = {};
+    // What is actually painted on the e-paper. Diverges from
+    // displayed_state during standby — displayed_state follows the
+    // logical mode (so the touch task sees Standby and routes
+    // wake-touches via store_go_home), while panel_state stays at the
+    // pre-standby screen, since the e-paper is not repainted on
+    // standby entry. On wake, comparing current_state to panel_state
+    // means we only repaint if the destination mode differs from
+    // what's already on the panel, or if header bits drifted during
+    // the standby window.
+    UIState panel_state = {};
     bool display_is_dirty = false;
     static WifiSettingsSnapshot wifi_settings_snapshot;
     static WifiPasswordSnapshot wifi_password_snapshot;
@@ -813,13 +823,20 @@ void ui_task(void* arg) {
         if (notified || battery_status_refresh) {
             store_update_ui_state(ctx->store, &current_state);
 
-            const bool mode_changed = current_state.mode != displayed_state.mode;
-            const bool settings_changed = current_state.settings_revision != displayed_state.settings_revision;
-            const bool battery_changed = current_state.battery_revision != displayed_state.battery_revision;
-            const bool device_changed = current_state.media_device_idx != displayed_state.media_device_idx;
+            const bool mode_changed = current_state.mode != panel_state.mode;
+            const bool settings_changed = current_state.settings_revision != panel_state.settings_revision;
+            const bool battery_changed = current_state.battery_revision != panel_state.battery_revision;
+            const bool device_changed = current_state.media_device_idx != panel_state.media_device_idx;
             const bool wifi_changed =
                 wifi_bars_from_rssi(current_state.wifi_rssi, current_state.wifi_connected) !=
-                wifi_bars_from_rssi(displayed_state.wifi_rssi, displayed_state.wifi_connected);
+                wifi_bars_from_rssi(panel_state.wifi_rssi, panel_state.wifi_connected);
+            // Suppress the home-screen header partial update on the
+            // single iteration that exits standby, so the wake-touch
+            // gets the fastest possible response. Header drift (wifi
+            // bars, battery SoC) gets reconciled on the next sample
+            // notification instead of on the wake itself.
+            const bool waking_from_standby =
+                displayed_state.mode == UiMode::Standby && current_state.mode != UiMode::Standby;
 
             if (current_state.mode == UiMode::Standby) {
                 // Keep whatever was on screen before standby. The standby
@@ -833,6 +850,7 @@ void ui_task(void* arg) {
                 ui_draw_wifi_settings(ctx->epaper, &wifi_settings_snapshot);
                 { PmRefreshGuard g; ctx->epaper->fullUpdate(CLEAR_FAST, true); }
                 display_is_dirty = false;
+                panel_state = current_state;
             } else if (current_state.mode == UiMode::WifiPassword && (mode_changed || settings_changed)) {
                 if (!store_get_wifi_password_snapshot(ctx->store, &wifi_password_snapshot)) {
                     current_state.mode = UiMode::GenericError;
@@ -847,6 +865,7 @@ void ui_task(void* arg) {
                     { PmRefreshGuard g; ctx->epaper->fullUpdate(CLEAR_FAST, true); }
                 }
                 display_is_dirty = false;
+                panel_state = current_state;
             } else if (current_state.mode == UiMode::MediaController && (mode_changed || device_changed)) {
                 uint8_t batt_soc = 0;
                 const bool batt_valid = store_get_battery_state(ctx->store, &batt_soc, nullptr);
@@ -857,7 +876,8 @@ void ui_task(void* arg) {
                                          current_state.wifi_rssi, current_state.wifi_connected);
                 { PmRefreshGuard g; ctx->epaper->fullUpdate(CLEAR_FAST, true); }
                 display_is_dirty = false;
-            } else if (current_state.mode == UiMode::MediaController && (wifi_changed || battery_changed)) {
+                panel_state = current_state;
+            } else if (current_state.mode == UiMode::MediaController && (wifi_changed || battery_changed) && !waking_from_standby) {
                 // Header-only change: redraw just the wifi button and/or
                 // battery slot with a partial update so the rest of the
                 // screen doesn't flash.
@@ -912,12 +932,14 @@ void ui_task(void* arg) {
                 }
                 { PmRefreshGuard g; ctx->epaper->partialUpdate(true, start_row, end_row); }
                 display_is_dirty = false;
+                panel_state = current_state;
             } else if (current_state.mode == UiMode::MediaDeviceSelect && (mode_changed || settings_changed)) {
                 ctx->epaper->setMode(BB_MODE_1BPP);
                 ctx->epaper->fillScreen(BBEP_WHITE);
                 ui_draw_media_device_select(ctx->epaper, ctx->config, current_state.media_device_idx);
                 { PmRefreshGuard g; ctx->epaper->fullUpdate(CLEAR_FAST, true); }
                 display_is_dirty = false;
+                panel_state = current_state;
             } else if (current_state.mode == UiMode::BatteryStatus &&
                        (mode_changed || settings_changed || battery_changed || battery_status_refresh)) {
                 ChargerSnapshot charger = {};
@@ -936,12 +958,14 @@ void ui_task(void* arg) {
                                        batt_valid, batt_soc, batt_mv);
                 { PmRefreshGuard g; ctx->epaper->fullUpdate(CLEAR_FAST, true); }
                 display_is_dirty = false;
+                panel_state = current_state;
             } else if (mode_changed) {
                 ctx->epaper->setMode(BB_MODE_1BPP);
                 ctx->epaper->fillScreen(BBEP_WHITE);
                 ui_show_message(current_state.mode, ctx->epaper);
                 { PmRefreshGuard g; ctx->epaper->fullUpdate(CLEAR_FAST, true); }
                 display_is_dirty = false;
+                panel_state = current_state;
             }
 
             displayed_state = current_state;
