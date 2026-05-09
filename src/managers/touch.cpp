@@ -709,6 +709,27 @@ void touch_task(void* arg) {
                 } else {
                     touch_end.x = ti.x[0];
                     touch_end.y = ti.y[0];
+                    // Touchpad swipe: dispatch the dominant direction as soon as
+                    // motion crosses the threshold, instead of waiting for the
+                    // user to lift. swallow_touch_release doubles as the
+                    // "already fired" latch so we don't re-dispatch on every
+                    // sample after the threshold is crossed, and so the release
+                    // path skips its own swipe/tap dispatch.
+                    if (!swallow_touch_release &&
+                        media_button_from_touch(&touch_start) == MediaButton::Touchpad) {
+                        constexpr int16_t SWIPE_THRESHOLD = 5;
+                        const int16_t dx = static_cast<int16_t>(touch_end.x) - static_cast<int16_t>(touch_start.x);
+                        const int16_t dy = static_cast<int16_t>(touch_end.y) - static_cast<int16_t>(touch_start.y);
+                        const int16_t abs_dx = dx < 0 ? -dx : dx;
+                        const int16_t abs_dy = dy < 0 ? -dy : dy;
+                        if (abs_dx >= SWIPE_THRESHOLD || abs_dy >= SWIPE_THRESHOLD) {
+                            const MediaButton action = abs_dx > abs_dy
+                                ? (dx > 0 ? MediaButton::DpadRight : MediaButton::DpadLeft)
+                                : (dy > 0 ? MediaButton::DpadDown : MediaButton::DpadUp);
+                            media_dispatch_button(store, config, action);
+                            swallow_touch_release = true;
+                        }
+                    }
                     if (autorepeat_btn != MediaButton::None &&
                         static_cast<uint32_t>(now_ms - last_repeat_ms) >= AUTOREPEAT_INTERVAL_MS) {
                         media_dispatch_button(store, config, autorepeat_btn);
