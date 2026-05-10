@@ -147,6 +147,19 @@ void setup() {
     // Idempotent / safe even if BT was never initialized.
     btStop();
 
+    // Install the GPIO ISR service explicitly while we're still single-
+    // threaded. attachInterrupt() lazily installs it on first call, but
+    // the lazy path has a TOCTOU between the "already installed" check
+    // and the calloc that backs gpio_isr_func: when setup()'s home/IO48
+    // ISR install races touch_task's TOUCH_INT install on a different
+    // core, both can pass the check, both calloc, and the second
+    // assignment can leave gpio_isr_func partially clobbered — the
+    // crash signature is gpio_isr_handler_add deref'ing NULL inside
+    // touch_task. Doing the install once here, before any xTaskCreate,
+    // closes the race; later attachInterrupt calls just see "already
+    // installed" and skip the install path.
+    gpio_install_isr_service(0);
+
 #if defined(ENABLE_PM_DFS) || defined(ENABLE_PM_LIGHT_SLEEP)
     // Dynamic frequency scaling so the SoC can drop to min_freq_mhz between
     // FreeRTOS ticks. Min 40 MHz is the XTAL clock — the deepest DFS state on
