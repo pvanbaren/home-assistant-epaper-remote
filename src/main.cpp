@@ -107,6 +107,19 @@ static void enter_deep_sleep() {
     }
 
     const auto pin = static_cast<gpio_num_t>(HOME_BUTTON_PIN);
+#if defined(ENABLE_PM_LIGHT_SLEEP)
+    // Wipe every residual wake source the PM/tickless-idle path armed before
+    // we hand off to ext0. ESP-IDF enables ESP_SLEEP_WAKEUP_TIMER on each
+    // light-sleep entry, and loop()'s deferred-PM block calls
+    // gpio_wakeup_enable on HOME_BUTTON_PIN and TOUCH_INT. Those enable bits
+    // carry into deep sleep: a stale timer wakes the SoC microseconds after
+    // esp_deep_sleep_start(), and a floating TOUCH_INT (once einkPower(false)
+    // unpowers the GT911 below) fires GPIO wake before ext0 has a chance.
+    // Gated on ENABLE_PM_LIGHT_SLEEP for symmetry with the enable side —
+    // nothing arms either source without that flag.
+    gpio_wakeup_disable(pin);
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+#endif
     rtc_gpio_init(pin);
     rtc_gpio_set_direction(pin, RTC_GPIO_MODE_INPUT_ONLY);
     if (HOME_BUTTON_ACTIVE_LOW) {
