@@ -237,6 +237,13 @@ void setup() {
     gpio_wakeup_enable(static_cast<gpio_num_t>(TOUCH_INT), GPIO_INTR_LOW_LEVEL);
     esp_sleep_enable_gpio_wakeup();
 #endif
+
+#if defined(DISABLE_USB_AFTER_BOOT)
+    // Production builds: stop the USB-CDC stack to drop the phy power draw and
+    // avoid spurious wake events from a connected host. All ESP_LOG output
+    // after this point is silently discarded.
+    Serial.end();
+#endif
 }
 
 void loop() {
