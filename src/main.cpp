@@ -69,6 +69,16 @@ static void enter_deep_sleep() {
     epaper.fullUpdate(CLEAR_FAST, true);
     epaper.einkPower(false);
 
+    // Detach matrix-level ISRs on the pins we're about to touch with the
+    // RTC GPIO peripheral. rtc_gpio_init momentarily drives the pin low
+    // while reconfiguring the IOMUX, and a still-armed FALLING ISR will
+    // fire repeatedly off that transient — gpio_isr_loop spins until
+    // IWDT trips. Has to happen before rtc_gpio_init.
+    detachInterrupt(digitalPinToInterrupt(HOME_BUTTON_PIN));
+    if (IO_EXPANDER_INT_PIN >= 0) {
+        detachInterrupt(digitalPinToInterrupt(IO_EXPANDER_INT_PIN));
+    }
+
     const auto pin = static_cast<gpio_num_t>(HOME_BUTTON_PIN);
     rtc_gpio_init(pin);
     rtc_gpio_set_direction(pin, RTC_GPIO_MODE_INPUT_ONLY);
@@ -81,6 +91,12 @@ static void enter_deep_sleep() {
         rtc_gpio_pulldown_en(pin);
         esp_sleep_enable_ext0_wakeup(pin, 1);
     }
+    // Latch the pull-up/pull-down state through the deep-sleep transition.
+    // Without this, the RTC peripheral lockdown can drop the pull-up the
+    // moment sleep starts, the pin floats, ext0 sees low, and the SoC
+    // wakes immediately — looks like the device "resets" right after the
+    // standby screen.
+    rtc_gpio_hold_en(pin);
 
     esp_deep_sleep_start();
 }
