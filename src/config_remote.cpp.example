@@ -7,6 +7,13 @@ void configure_remote(Configuration* config) {
     // Configure wifi
     config->wifi_ssid = "MyWifiSSID";
     config->wifi_password = "my-wifi-password1234!";
+    // Optional static IP. Leave nullptr (or omit) for DHCP. ip/gateway/
+    // subnet must all be set together; dns1/dns2 are optional.
+    // config->wifi_static_ip      = "192.168.1.50";
+    // config->wifi_static_gateway = "192.168.1.1";
+    // config->wifi_static_subnet  = "255.255.255.0";
+    // config->wifi_dns1           = "192.168.1.1";
+    // config->wifi_dns2           = "1.1.1.1";
 
     // Configure home assistant
     // Base URL of the HA instance — scheme + host + port, no trailing slash

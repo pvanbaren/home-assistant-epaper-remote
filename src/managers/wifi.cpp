@@ -195,6 +195,37 @@ static bool wifi_start_connection(const char* ssid, const char* password, bool c
 
     WiFi.disconnect(false, true);
     delay(120);
+
+    // Apply static IP for the default profile when fully configured;
+    // anything else (custom profile or missing fields) → DHCP. Calling
+    // WiFi.config(0,0,0) explicitly resets a previously-applied static
+    // config so reconnects to a custom profile come back up on DHCP.
+    const auto* cfg = g_wifi.config;
+    bool used_static = false;
+    if (!custom_profile_active && cfg && cfg->wifi_static_ip
+        && cfg->wifi_static_gateway && cfg->wifi_static_subnet) {
+        IPAddress ip, gateway, subnet, dns1, dns2;
+        if (ip.fromString(cfg->wifi_static_ip)
+            && gateway.fromString(cfg->wifi_static_gateway)
+            && subnet.fromString(cfg->wifi_static_subnet)) {
+            const bool has_dns1 = cfg->wifi_dns1 && dns1.fromString(cfg->wifi_dns1);
+            const bool has_dns2 = cfg->wifi_dns2 && dns2.fromString(cfg->wifi_dns2);
+            if (WiFi.config(ip, gateway, subnet,
+                            has_dns1 ? dns1 : IPAddress(),
+                            has_dns2 ? dns2 : IPAddress())) {
+                ESP_LOGI(TAG, "static IP %s, gw %s", cfg->wifi_static_ip, cfg->wifi_static_gateway);
+                used_static = true;
+            } else {
+                ESP_LOGW(TAG, "WiFi.config rejected static IP fields; falling back to DHCP");
+            }
+        } else {
+            ESP_LOGW(TAG, "could not parse static IP fields; falling back to DHCP");
+        }
+    }
+    if (!used_static) {
+        WiFi.config(IPAddress(), IPAddress(), IPAddress());
+    }
+
     WiFi.begin(ssid, password ? password : "");
     return true;
 }

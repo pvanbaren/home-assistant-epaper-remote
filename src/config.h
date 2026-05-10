@@ -49,6 +49,17 @@ struct MediaDevice {
 struct Configuration {
     const char* wifi_ssid;
     const char* wifi_password;
+    // Optional static IP for the default profile. Leave wifi_static_ip
+    // null to use DHCP. wifi_static_ip / wifi_static_gateway /
+    // wifi_static_subnet must all be set together (any null → DHCP).
+    // wifi_dns1 / wifi_dns2 are optional; nullptr falls back to gateway.
+    // Custom profiles (entered via the on-device Wi-Fi UI) always use
+    // DHCP regardless of these fields.
+    const char* wifi_static_ip;
+    const char* wifi_static_gateway;
+    const char* wifi_static_subnet;
+    const char* wifi_dns1;
+    const char* wifi_dns2;
 
     const char* home_assistant_url;
     const char* home_assistant_token;
