@@ -74,6 +74,14 @@ static void enter_deep_sleep() {
         return;
     }
 
+    // Hold the NO_LIGHT_SLEEP lock for the full transition. Without it
+    // (with ENABLE_PM_LIGHT_SLEEP on) the SoC can drop into auto light
+    // sleep between fullUpdate(CLEAR_FAST) and esp_deep_sleep_start —
+    // e.g. during rtc_gpio register pokes — corrupting the transition
+    // and leading to a panic+reset instead of a clean sleep. No-op when
+    // PM flags are disabled.
+    PmRefreshGuard pm_guard;
+
     ESP_LOGI(TAG, "Entering deep sleep (wake on BOOT button, GPIO %d)", HOME_BUTTON_PIN);
 
     // Tear down network state cleanly before the radios get powered off.
