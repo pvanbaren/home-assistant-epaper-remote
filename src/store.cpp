@@ -1,4 +1,5 @@
 #include "store.h"
+#include "config.h"
 #include "esp_log.h"
 #include <Preferences.h>
 #include <cstring>
@@ -84,12 +85,43 @@ void store_send_media_command(EntityStore* store, CommandType type, const char* 
     slot.entity_idx = UINT8_MAX;
     slot.value = 0;
     slot.command_name = command_name;
+    slot.action = nullptr;
     store->media_command_tail = (store->media_command_tail + 1) % MEDIA_COMMAND_QUEUE_SIZE;
     store->media_command_count++;
     xSemaphoreGive(store->mutex);
 
     ESP_LOGI(TAG, "Queued media command type=%u entity=%s cmd=%s", static_cast<unsigned>(type), entity_id ? entity_id : "(null)",
              command_name ? command_name : "(null)");
+
+    if (store->home_assistant_task) {
+        xTaskNotifyGive(store->home_assistant_task);
+    }
+}
+
+void store_send_hass_action(EntityStore* store, const HassAction* action) {
+    if (!action || !action->domain || !action->service) {
+        ESP_LOGW(TAG, "store_send_hass_action: action missing domain/service, skipping");
+        return;
+    }
+    xSemaphoreTake(store->mutex, portMAX_DELAY);
+    if (store->media_command_count == MEDIA_COMMAND_QUEUE_SIZE) {
+        store->media_command_head = (store->media_command_head + 1) % MEDIA_COMMAND_QUEUE_SIZE;
+        store->media_command_count--;
+        ESP_LOGW(TAG, "Media command queue full, dropping oldest");
+    }
+    Command& slot = store->media_command_queue[store->media_command_tail];
+    slot.type = CommandType::CallService;
+    slot.entity_id = action->entity_id;
+    slot.entity_idx = UINT8_MAX;
+    slot.value = 0;
+    slot.command_name = nullptr;
+    slot.action = action;
+    store->media_command_tail = (store->media_command_tail + 1) % MEDIA_COMMAND_QUEUE_SIZE;
+    store->media_command_count++;
+    xSemaphoreGive(store->mutex);
+
+    ESP_LOGI(TAG, "Queued HA action %s.%s entity=%s", action->domain, action->service,
+             action->entity_id ? action->entity_id : "(none)");
 
     if (store->home_assistant_task) {
         xTaskNotifyGive(store->home_assistant_task);

@@ -27,6 +27,16 @@ struct MediaSource {
     const uint8_t* icon;        // optional 64x64 BMP from icons.h
 };
 
+// Generic Home Assistant service-call descriptor used by hardware buttons
+// that map to a configurable action. Fire-and-forget — the result of the
+// service call is not surfaced back to the UI. Leave domain = nullptr to
+// mark the action as unset.
+struct HassAction {
+    const char* domain;     // e.g. "script", "light", "media_player"
+    const char* service;    // e.g. "turn_on", "toggle", "media_play_pause"
+    const char* entity_id;  // target entity, or nullptr to omit
+};
+
 struct MediaDevice {
     const char* title;                    // header label, e.g. "Living Room"
     const char* remote_entity_id;         // remote.* target for D-pad / transport / Back / Home / Menu

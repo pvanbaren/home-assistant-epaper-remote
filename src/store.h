@@ -13,7 +13,10 @@ enum class CommandType : uint8_t {
     MediaSelectSource,
     RemoteSendCommand,
     ScriptTurnOn,
+    CallService, // generic HA call_service from a HassAction descriptor
 };
+
+struct HassAction; // fwd-decl; full definition in config.h
 
 enum class ConnState : uint8_t {
     Initializing,
@@ -66,6 +69,7 @@ struct Command {
     uint8_t entity_idx;
     uint8_t value;
     const char* command_name; // payload for RemoteSendCommand (e.g. "Up"); nullptr otherwise
+    const HassAction* action; // payload for CallService; nullptr otherwise
 };
 
 struct EntityStore {
@@ -126,6 +130,7 @@ void store_init(EntityStore* store);
 void store_set_wifi_state(EntityStore* store, ConnState state);
 void store_set_hass_state(EntityStore* store, ConnState state);
 void store_send_media_command(EntityStore* store, CommandType type, const char* entity_id, const char* command_name);
+void store_send_hass_action(EntityStore* store, const HassAction* action);
 bool store_get_pending_command(EntityStore* store, Command* command); // pops from the queue
 bool store_go_home(EntityStore* store);
 bool store_open_wifi_settings(EntityStore* store);
