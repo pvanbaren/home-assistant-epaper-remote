@@ -12,7 +12,6 @@ enum class CommandType : uint8_t {
     MediaVolumeMute,
     MediaSelectSource,
     RemoteSendCommand,
-    ScriptTurnOn,
     CallService, // generic HA call_service from a HassAction descriptor
 };
 

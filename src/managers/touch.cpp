@@ -451,8 +451,8 @@ static void media_dispatch_button(EntityStore* store, const Configuration* confi
 
     switch (btn) {
     case MediaButton::Power:
-        if (device.power_script_entity_id) {
-            store_send_media_command(store, CommandType::ScriptTurnOn, device.power_script_entity_id, nullptr);
+        if (device.power_action.domain) {
+            store_send_hass_action(store, &device.power_action);
         }
         break;
     case MediaButton::Mute:

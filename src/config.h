@@ -42,7 +42,7 @@ struct MediaDevice {
     const char* remote_entity_id;         // remote.* target for D-pad / transport / Back / Home / Menu
     const char* volume_entity_id;         // media_player.* for volume up/down/mute
     const char* source_entity_id;         // media_player.* for select_source (often the streaming box)
-    const char* power_script_entity_id;   // script.* for the power button (may be nullptr)
+    HassAction power_action;              // Action fired by the on-screen power button. Leave domain = nullptr to disable.
     MediaSource sources[MEDIA_SOURCE_COUNT];
 };
 

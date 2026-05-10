@@ -37,7 +37,7 @@ void configure_remote(Configuration* config) {
         /* remote_entity_id */     "remote.roku_living_room",
         /* volume_entity_id */     "media_player.living_room_2",
         /* source_entity_id */     "media_player.roku_living_room",
-        /* power_script_entity_id*/"script.toggle_living_room_system",
+        /* power_action */         {"script", "turn_on", "script.toggle_living_room_system"},
         /* sources */ {
             {"YouTube TV",   "YouTube TV",   youtube_tv},
             {"Disney+",      "Disney Plus",  disney_plus},
@@ -53,7 +53,7 @@ void configure_remote(Configuration* config) {
         /* remote_entity_id */     "remote.roku_family_room",
         /* volume_entity_id */     "media_player.family_room",
         /* source_entity_id */     "media_player.roku_family_room",
-        /* power_script_entity_id*/nullptr,
+        /* power_action */         {},
         /* sources */ {
             {"YouTube TV",   "YouTube TV",   youtube_tv},
             {"Disney+",      "Disney Plus",  disney_plus},

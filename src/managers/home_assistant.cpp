@@ -136,12 +136,6 @@ static void hass_send_command(home_assistant_context_t* hass, Command* cmd) {
         hass_send_call_service(hass, "remote", "send_command", service_data);
         break;
     }
-    case CommandType::ScriptTurnOn: {
-        cJSON* service_data = cJSON_CreateObject();
-        cJSON_AddStringToObject(service_data, "entity_id", cmd->entity_id);
-        hass_send_call_service(hass, "script", "turn_on", service_data);
-        break;
-    }
     case CommandType::CallService: {
         if (!cmd->action || !cmd->action->domain || !cmd->action->service) {
             ESP_LOGW(TAG, "CallService missing domain/service");

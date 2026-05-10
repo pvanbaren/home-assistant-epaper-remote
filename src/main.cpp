@@ -172,11 +172,7 @@ void setup() {
     xTaskCreate(battery_task, "battery", 4096, &battery_task_args, 1, nullptr);
 
     if (HOME_BUTTON_PIN >= 0) {
-        if (HOME_BUTTON_ACTIVE_LOW) {
-            pinMode(HOME_BUTTON_PIN, INPUT_PULLUP);
-        } else {
-            pinMode(HOME_BUTTON_PIN, INPUT);
-        }
+        pinMode(HOME_BUTTON_PIN, HOME_BUTTON_ACTIVE_LOW ? INPUT_PULLUP : INPUT_PULLDOWN);
         attachInterrupt(digitalPinToInterrupt(HOME_BUTTON_PIN), home_button_isr,
                         HOME_BUTTON_ACTIVE_LOW ? FALLING : RISING);
 #if defined(ENABLE_PM_LIGHT_SLEEP)
