@@ -13,6 +13,10 @@ constexpr uint32_t HASS_RECONNECT_DELAY_MS = 10000;
 // if you see errors when using sliders.
 constexpr uint32_t HASS_TASK_SEND_DELAY_MS = 50;
 constexpr size_t   MEDIA_COMMAND_QUEUE_SIZE = 8;
+// Drop queued commands that have been sitting around longer than this —
+// stale state changes are worse than no change, especially after a
+// reconnect or a flood from a slider that the user already moved past.
+constexpr uint32_t MEDIA_COMMAND_MAX_AGE_MS = 2000;
 
 // When sending commands, we'll receive the updates from the server
 // with a delay. This causes jittering in the slider and unnecessary

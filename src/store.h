@@ -83,6 +83,7 @@ struct Command {
     uint8_t value;
     const char* command_name; // payload for RemoteSendCommand (e.g. "Up"); nullptr otherwise
     const HassAction* action; // payload for CallService; nullptr otherwise
+    uint32_t enqueued_ms;     // ms tick when enqueued; commands older than MEDIA_COMMAND_MAX_AGE_MS get dropped at dequeue
 };
 
 struct EntityStore {

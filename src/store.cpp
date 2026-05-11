@@ -86,6 +86,7 @@ void store_send_media_command(EntityStore* store, CommandType type, const char* 
     slot.value = 0;
     slot.command_name = command_name;
     slot.action = nullptr;
+    slot.enqueued_ms = static_cast<uint32_t>(xTaskGetTickCount() * portTICK_PERIOD_MS);
     store->media_command_tail = (store->media_command_tail + 1) % MEDIA_COMMAND_QUEUE_SIZE;
     store->media_command_count++;
     xSemaphoreGive(store->mutex);
@@ -116,6 +117,7 @@ void store_send_hass_action(EntityStore* store, const HassAction* action) {
     slot.value = 0;
     slot.command_name = nullptr;
     slot.action = action;
+    slot.enqueued_ms = static_cast<uint32_t>(xTaskGetTickCount() * portTICK_PERIOD_MS);
     store->media_command_tail = (store->media_command_tail + 1) % MEDIA_COMMAND_QUEUE_SIZE;
     store->media_command_count++;
     xSemaphoreGive(store->mutex);
@@ -130,15 +132,29 @@ void store_send_hass_action(EntityStore* store, const HassAction* action) {
 
 bool store_get_pending_command(EntityStore* store, Command* command) {
     xSemaphoreTake(store->mutex, portMAX_DELAY);
-    if (store->media_command_count == 0) {
-        xSemaphoreGive(store->mutex);
-        return false;
+    const uint32_t now_ms = static_cast<uint32_t>(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    uint8_t dropped = 0;
+    bool found = false;
+    while (store->media_command_count > 0) {
+        const Command& head = store->media_command_queue[store->media_command_head];
+        const bool stale = (now_ms - head.enqueued_ms) > MEDIA_COMMAND_MAX_AGE_MS;
+        if (!stale) {
+            *command = head;
+        }
+        store->media_command_head = (store->media_command_head + 1) % MEDIA_COMMAND_QUEUE_SIZE;
+        store->media_command_count--;
+        if (stale) {
+            dropped++;
+            continue;
+        }
+        found = true;
+        break;
     }
-    *command = store->media_command_queue[store->media_command_head];
-    store->media_command_head = (store->media_command_head + 1) % MEDIA_COMMAND_QUEUE_SIZE;
-    store->media_command_count--;
     xSemaphoreGive(store->mutex);
-    return true;
+    if (dropped > 0) {
+        ESP_LOGW(TAG, "Dropped %u stale media command(s) (>%u ms old)", dropped, MEDIA_COMMAND_MAX_AGE_MS);
+    }
+    return found;
 }
 
 bool store_go_home(EntityStore* store) {
