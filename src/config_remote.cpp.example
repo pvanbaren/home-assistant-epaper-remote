@@ -9,8 +9,10 @@ void configure_remote(Configuration* config) {
     config->wifi_password = "my-wifi-password1234!";
 
     // Configure home assistant
-    // If you're using https, use wss://, otherwise use ws://
-    config->home_assistant_url = "wss://homeassistant.local:8123/api/websocket";
+    // Base URL of the HA instance — scheme + host + port, no trailing slash
+    // and no path. The HTTPS REST API endpoints are appended at runtime
+    // (/api/, /api/services/<domain>/<service>).
+    config->home_assistant_url = "https://homeassistant.local:8123";
     config->home_assistant_token = "ey...";
     config->root_ca = ISRG_ROOT_X1; // You probably don't need to update this
 

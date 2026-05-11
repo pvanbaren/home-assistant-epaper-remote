@@ -4,8 +4,8 @@ e-Ink remote for Home Assistant built with [FastEPD](https://github.com/bitbank2
 
 ![Preview](./preview.jpg)
 
-It uses the websocket API of Home Assistant, no plugin is required on the server.
-As it stays permanently connected to the Wifi to get updates, the remote only lasts a few hours on battery.
+It uses the HTTPS REST API of Home Assistant, no plugin is required on the server.
+As it stays connected to the Wifi to send commands, the remote only lasts a few hours on battery.
 
 ## Hardware supported
 

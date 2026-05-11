@@ -84,10 +84,9 @@ static void enter_deep_sleep() {
 
     ESP_LOGI(TAG, "Entering deep sleep (wake on BOOT button, GPIO %d)", HOME_BUTTON_PIN);
 
-    // Tear down network state cleanly before the radios get powered off.
-    // Without this the WebSocket TCP socket dies abruptly and HA holds a
-    // half-open session until its keepalive timer expires (~30-60 s).
-    home_assistant_shutdown();
+    // Cleanly take WiFi down before the radio is gated; the HA task runs
+    // its requests synchronously over plain HTTPS now, so there's no
+    // half-open session for the server to hang onto.
     WiFi.disconnect(true, false);
 
     // Paint the "Press to wake ->" screen right before powering down so the
