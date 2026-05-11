@@ -507,16 +507,17 @@ IdleSnapshot store_poll_idle(EntityStore* store, uint32_t now_ms) {
 
     const uint32_t age = static_cast<uint32_t>(now_ms - store->last_interaction_ms);
     const bool net_up = store->wifi == ConnState::Up && store->home_assistant == ConnState::Up;
-    const bool settings_open = store->settings_mode != SettingsMode::None;
-    const bool can_idle = net_up && !settings_open;
 
     IdlePhase phase;
     if (age < BACKLIGHT_PULSE_MS) {
         phase = IdlePhase::Active;
-    } else if (!can_idle || age < STANDBY_IDLE_TIMEOUT_MS) {
-        // Backlight off but UI mode unchanged. Without network or with
-        // settings open we cap here — Standby would hide the actual
-        // screen the user needs to see.
+    } else if (!net_up || age < STANDBY_IDLE_TIMEOUT_MS) {
+        // Backlight off but UI mode unchanged. Without network we cap
+        // here — Standby would hide the disconnected hint the user needs
+        // to see. Settings / battery panes used to gate Standby too, but
+        // they now auto-close on the entered_standby edge instead (see
+        // main.cpp), so a forgotten settings screen doesn't keep the
+        // device awake forever.
         phase = IdlePhase::Dim;
     } else if (age < DEEP_SLEEP_IDLE_TIMEOUT_MS) {
         phase = IdlePhase::Standby;

@@ -311,9 +311,19 @@ void loop() {
 
     // Single idle-phase poll drives everything time-related: backlight
     // level, standby UI mode, deep-sleep entry. Phase is computed from
-    // store->last_interaction_ms with network/settings gating applied
-    // inside the store.
+    // store->last_interaction_ms with network gating applied inside
+    // the store.
     const IdleSnapshot idle = store_poll_idle(&store, millis());
+
+    if (idle.entered_standby) {
+        // Auto-close any modal panes the user left open so coming back
+        // from standby always lands on the home screen, not a half-
+        // filled Wi-Fi password, a stale battery-status page, or the
+        // device picker.
+        store_close_settings(&store);
+        store_close_battery_status(&store);
+        store_close_media_device_select(&store);
+    }
 
     if (BACKLIGHT_PIN >= 0) {
         const bool want_on = s_backlight_auto_on && idle.phase == IdlePhase::Active;
