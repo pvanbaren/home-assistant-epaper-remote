@@ -165,17 +165,16 @@ void setup() {
     gpio_install_isr_service(0);
 
 #if defined(ENABLE_PM_DFS) || defined(ENABLE_PM_LIGHT_SLEEP)
-    // Dynamic frequency scaling so the SoC can drop to min_freq_mhz between
-    // FreeRTOS ticks. Min 40 MHz is the XTAL clock — the deepest DFS state on
-    // ESP32-S3.
+    // Arm DFS at boot but leave automatic light sleep OFF for now even when
+    // ENABLE_PM_LIGHT_SLEEP is defined. Enabling light sleep here races
+    // FastEPD's busy-spin first refresh on Core 1 against gpio_isr_register
+    // / I2C probe on Core 0 — the per-ISR PM hooks then trip the interrupt
+    // watchdog in vPortExitCritical. loop() flips light_sleep_enable on
+    // once the boot-storm has settled.
     esp_pm_config_esp32s3_t pm_cfg = {
         .max_freq_mhz = 240,
         .min_freq_mhz = 40,
-#if defined(ENABLE_PM_LIGHT_SLEEP)
-        .light_sleep_enable = true,
-#else
         .light_sleep_enable = false,
-#endif
     };
     esp_err_t pm_err = esp_pm_configure(&pm_cfg);
     if (pm_err != ESP_OK) {
@@ -232,10 +231,8 @@ void setup() {
         pinMode(HOME_BUTTON_PIN, HOME_BUTTON_ACTIVE_LOW ? INPUT_PULLUP : INPUT_PULLDOWN);
         attachInterrupt(digitalPinToInterrupt(HOME_BUTTON_PIN), home_button_isr,
                         HOME_BUTTON_ACTIVE_LOW ? FALLING : RISING);
-#if defined(ENABLE_PM_LIGHT_SLEEP)
-        gpio_wakeup_enable(static_cast<gpio_num_t>(HOME_BUTTON_PIN),
-                           HOME_BUTTON_ACTIVE_LOW ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
-#endif
+        // gpio_wakeup_enable is deferred to the one-shot block at the top of
+        // loop() (see ENABLE_PM_LIGHT_SLEEP arming below).
     }
 
     if (BACKLIGHT_PIN >= 0) {
@@ -268,13 +265,9 @@ void setup() {
         attachInterrupt(digitalPinToInterrupt(IO_EXPANDER_INT_PIN), io_expander_int_isr, FALLING);
     }
 
-#if defined(ENABLE_PM_LIGHT_SLEEP)
-    // Allow GPIO interrupts (touch INT, home button) to wake the SoC from
-    // automatic light sleep. Per-pin level config is set where each pin is
-    // registered.
-    gpio_wakeup_enable(static_cast<gpio_num_t>(TOUCH_INT), GPIO_INTR_LOW_LEVEL);
-    esp_sleep_enable_gpio_wakeup();
-#endif
+    // Light-sleep wake-source arming and the esp_pm_configure flip both
+    // happen in loop()'s one-shot block once the boot-storm has settled —
+    // see the ENABLE_PM_LIGHT_SLEEP block at the top of loop().
 
 #if defined(DISABLE_USB_AFTER_BOOT)
     // Production builds: stop the USB-CDC stack to drop the phy power draw and
@@ -288,6 +281,40 @@ void loop() {
     // 1 s housekeeping tick. ISRs (home button) and store notifications
     // still wake us early.
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+
+#if defined(ENABLE_PM_LIGHT_SLEEP)
+    // Defer light-sleep arming until after the boot-storm: the first
+    // FastEPD refresh on Core 1 + BBCapTouch I2C probe + gpio_isr_register
+    // on Core 0 race in vPortExitCritical when the per-ISR PM hooks are
+    // active during setup(). By the time loop() runs, ui_task has finished
+    // its first refresh and BBCapTouch has finished probing — safe to flip
+    // automatic light sleep on.
+    static bool light_sleep_armed = false;
+    if (!light_sleep_armed) {
+        light_sleep_armed = true;
+        esp_pm_config_esp32s3_t pm_cfg = {
+            .max_freq_mhz = 240,
+            .min_freq_mhz = 40,
+            .light_sleep_enable = true,
+        };
+        esp_err_t pm_err = esp_pm_configure(&pm_cfg);
+        if (pm_err == ESP_OK) {
+            ESP_LOGI(TAG, "Light sleep enabled");
+        } else {
+            ESP_LOGW(TAG, "Light sleep enable failed: %s", esp_err_to_name(pm_err));
+        }
+
+        // Per-pin wake-source level configs. esp_sleep_enable_gpio_wakeup
+        // is the global enable; each gpio_wakeup_enable selects the trigger
+        // level for that specific pin.
+        if (HOME_BUTTON_PIN >= 0) {
+            gpio_wakeup_enable(static_cast<gpio_num_t>(HOME_BUTTON_PIN),
+                               HOME_BUTTON_ACTIVE_LOW ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
+        }
+        gpio_wakeup_enable(static_cast<gpio_num_t>(TOUCH_INT), GPIO_INTR_LOW_LEVEL);
+        esp_sleep_enable_gpio_wakeup();
+    }
+#endif
 
     wifi_poll();
 
