@@ -316,6 +316,16 @@ void loop() {
     }
 #endif
 
+    // With light sleep on, GPIO_INTR_LOW_LEVEL wakes the SoC when the IO
+    // expander asserts INT, but the FALLING-edge ISR doesn't see the edge
+    // (it happened while the GPIO peripheral was gated). The INT line stays
+    // LOW until we read the expander, so sample the pin directly — the
+    // edge-detection in the s_io_expander_pending block below still guards
+    // against re-firing the same press while the button is held.
+    if (IO_EXPANDER_INT_PIN >= 0 && digitalRead(IO_EXPANDER_INT_PIN) == LOW) {
+        s_io_expander_pending = true;
+    }
+
     wifi_poll();
 
     if (s_home_button_pending) {
