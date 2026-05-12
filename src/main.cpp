@@ -171,7 +171,7 @@ void setup() {
     // / I2C probe on Core 0 — the per-ISR PM hooks then trip the interrupt
     // watchdog in vPortExitCritical. loop() flips light_sleep_enable on
     // once the boot-storm has settled.
-    esp_pm_config_esp32s3_t pm_cfg = {
+    esp_pm_config_t pm_cfg = {
         .max_freq_mhz = 240,
         .min_freq_mhz = 40,
         .light_sleep_enable = false,
@@ -294,7 +294,7 @@ void loop() {
     static bool light_sleep_armed = false;
     if (!light_sleep_armed) {
         light_sleep_armed = true;
-        esp_pm_config_esp32s3_t pm_cfg = {
+        esp_pm_config_t pm_cfg = {
             .max_freq_mhz = 240,
             .min_freq_mhz = 40,
             .light_sleep_enable = true,
