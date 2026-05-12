@@ -16,6 +16,14 @@ static const char* TAG = "home_assistant";
 // path component).
 constexpr const char* HASS_PROBE_PATH = "/api/";
 
+// Set by home_assistant_task at startup; used by hass_request_probe() to
+// nudge the next reconnect attempt. Both fields are written from one task
+// and read from the task itself plus optionally hass_request_probe(); on
+// ESP32 a 32-bit aligned TickType_t / pointer load-store is atomic, so no
+// extra synchronisation is needed for the nudge path.
+static EntityStore* s_hass_store = nullptr;
+static volatile TickType_t s_next_retry = 0;
+
 struct home_assistant_context {
     EntityStore* store;
     const Configuration* config;
@@ -184,6 +192,7 @@ static void hass_send_command(home_assistant_context* hass, Command* cmd) {
 void home_assistant_task(void* arg) {
     HomeAssistantTaskArgs* ctx = static_cast<HomeAssistantTaskArgs*>(arg);
     EntityStore* store = ctx->store;
+    s_hass_store = store;
 
     ESP_LOGI(TAG, "Waiting for wifi...");
     store_wait_for_wifi_up(store);
@@ -219,14 +228,14 @@ void home_assistant_task(void* arg) {
     hass_probe(hass);
 
     Command command;
-    TickType_t next_retry = xTaskGetTickCount() + pdMS_TO_TICKS(HASS_RECONNECT_DELAY_MS);
+    s_next_retry = xTaskGetTickCount() + pdMS_TO_TICKS(HASS_RECONNECT_DELAY_MS);
     while (1) {
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
 
-        if (hass->state == ConnState::ConnectionError && xTaskGetTickCount() >= next_retry) {
+        if (hass->state == ConnState::ConnectionError && xTaskGetTickCount() >= s_next_retry) {
             store_wait_for_wifi_up(store);
             hass_probe(hass);
-            next_retry = xTaskGetTickCount() + pdMS_TO_TICKS(HASS_RECONNECT_DELAY_MS);
+            s_next_retry = xTaskGetTickCount() + pdMS_TO_TICKS(HASS_RECONNECT_DELAY_MS);
         }
 
         if (hass->state == ConnState::Up) {
@@ -242,4 +251,15 @@ void home_assistant_task(void* arg) {
             }
         }
     }
+}
+
+void hass_request_probe() {
+    if (!s_hass_store || !s_hass_store->home_assistant_task) {
+        return;
+    }
+    // Pull the next probe forward to "now" so the task's retry-gate fires
+    // on its next wake, and notify the task so that wake happens immediately
+    // instead of after the 1 s ulTaskNotifyTake timeout.
+    s_next_retry = xTaskGetTickCount();
+    xTaskNotifyGive(s_hass_store->home_assistant_task);
 }

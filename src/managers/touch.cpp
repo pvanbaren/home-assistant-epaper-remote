@@ -1,4 +1,5 @@
 #include "managers/touch.h"
+#include "managers/home_assistant.h"
 #include "managers/wifi.h"
 #include "boards.h"
 #include "config.h"
@@ -798,7 +799,14 @@ void touch_task(void* arg) {
                     touch_event.x = ti.x[0];
                     touch_event.y = ti.y[0];
                     if (is_wifi_disc_retry_touched(&touch_event)) {
-                        wifi_reconnect();
+                        // Wi-Fi screen retries the link; HA screen pokes the
+                        // HA task to probe now instead of bouncing Wi-Fi for
+                        // no reason.
+                        if (ui_state->mode == UiMode::HassDisconnected) {
+                            hass_request_probe();
+                        } else {
+                            wifi_reconnect();
+                        }
                         touch_start = touch_event;
                         touch_end = touch_event;
                         touching = true;
