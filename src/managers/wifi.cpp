@@ -352,7 +352,9 @@ static void wifi_perform_recovery() {
     delay(120);
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
-    WiFi.setSleep(WIFI_PS_MAX_MODEM);
+    // Power save off during association; the GOT_IP handler re-applies
+    // WIFI_PS_MAX_MODEM after the new link comes up.
+    WiFi.setSleep(WIFI_PS_NONE);
     WiFi.setTxPower(WIFI_POWER_8_5dBm);
     WiFi.begin(g_wifi.active_ssid, g_wifi.active_password);
 }
@@ -532,6 +534,10 @@ void launch_wifi(Configuration* config, EntityStore* store) {
             store_set_wifi_connecting(store, false);
             store_set_wifi_connect_error(store, nullptr);
             wifi_refresh_connection_info();
+            // Now that we're associated, turn on modem power save. Doing
+            // this before WiFi.begin() costs a beacon interval or two on
+            // the initial connect.
+            WiFi.setSleep(WIFI_PS_MAX_MODEM);
             uint8_t* bssid = WiFi.BSSID();
             int32_t channel = WiFi.channel();
             if (bssid && channel >= 1 && channel <= 14 && g_wifi.active_ssid[0] != '\0') {
@@ -619,7 +625,10 @@ void launch_wifi(Configuration* config, EntityStore* store) {
     WiFi.persistent(false);
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
-    WiFi.setSleep(WIFI_PS_MAX_MODEM);
+    // Power save is applied in the GOT_IP handler instead of here — leaving
+    // it off during association shaves a beacon interval or two off the
+    // initial connect time. It persists across reconnects once set.
+    WiFi.setSleep(WIFI_PS_NONE);
     WiFi.setTxPower(WIFI_POWER_8_5dBm);
 
     wifi_start_connection(boot_ssid, boot_password, use_custom_profile, /*fresh_boot=*/true);
