@@ -12,6 +12,12 @@ static constexpr const char* WIFI_PREFS_NS = "wifi";
 static constexpr const char* WIFI_PREF_SSID_KEY = "ssid";
 static constexpr const char* WIFI_PREF_PASS_KEY = "pass";
 static constexpr const char* WIFI_PREF_NET_COUNT_KEY = "nc";
+// Fast-connect cache: last successfully-associated AP's BSSID + channel,
+// keyed by SSID. Lets WiFi.begin() skip the full 2.4 GHz channel scan on
+// the boot path when we're connecting to the same AP we used last time.
+static constexpr const char* WIFI_PREF_FC_SSID_KEY = "fcs";
+static constexpr const char* WIFI_PREF_FC_BSSID_KEY = "fcb";
+static constexpr const char* WIFI_PREF_FC_CHANNEL_KEY = "fcc";
 
 struct WifiContext {
     Configuration* config = nullptr;
@@ -160,6 +166,62 @@ static void wifi_save_custom_profile(const char* ssid, const char* password) {
     ESP_LOGI(TAG, "saved active custom profile for SSID '%s'", ssid ? ssid : "");
 }
 
+static bool wifi_load_fast_connect(const char* ssid, uint8_t* bssid_out, uint8_t* channel_out) {
+    if (!ssid || ssid[0] == '\0' || !bssid_out || !channel_out) {
+        return false;
+    }
+    Preferences prefs;
+    if (!prefs.begin(WIFI_PREFS_NS, false)) {
+        return false;
+    }
+    String cached_ssid = prefs.getString(WIFI_PREF_FC_SSID_KEY, "");
+    if (cached_ssid.length() == 0 || strcmp(cached_ssid.c_str(), ssid) != 0) {
+        prefs.end();
+        return false;
+    }
+    size_t bssid_len = prefs.getBytesLength(WIFI_PREF_FC_BSSID_KEY);
+    if (bssid_len != 6) {
+        prefs.end();
+        return false;
+    }
+    if (prefs.getBytes(WIFI_PREF_FC_BSSID_KEY, bssid_out, 6) != 6) {
+        prefs.end();
+        return false;
+    }
+    *channel_out = prefs.getUChar(WIFI_PREF_FC_CHANNEL_KEY, 0);
+    prefs.end();
+    return *channel_out >= 1 && *channel_out <= 14;
+}
+
+static void wifi_save_fast_connect(const char* ssid, const uint8_t* bssid, uint8_t channel) {
+    if (!ssid || ssid[0] == '\0' || !bssid || channel < 1 || channel > 14) {
+        return;
+    }
+    Preferences prefs;
+    if (!prefs.begin(WIFI_PREFS_NS, false)) {
+        return;
+    }
+    // Skip the NVS write when nothing changed — avoids burning flash erase
+    // cycles on every reconnect to the same AP.
+    String cached_ssid = prefs.getString(WIFI_PREF_FC_SSID_KEY, "");
+    uint8_t cached_bssid[6] = {0};
+    bool have_cached_bssid = prefs.getBytesLength(WIFI_PREF_FC_BSSID_KEY) == 6
+                             && prefs.getBytes(WIFI_PREF_FC_BSSID_KEY, cached_bssid, 6) == 6;
+    uint8_t cached_channel = prefs.getUChar(WIFI_PREF_FC_CHANNEL_KEY, 0);
+    if (cached_ssid == ssid && have_cached_bssid
+        && memcmp(cached_bssid, bssid, 6) == 0
+        && cached_channel == channel) {
+        prefs.end();
+        return;
+    }
+    prefs.putString(WIFI_PREF_FC_SSID_KEY, ssid);
+    prefs.putBytes(WIFI_PREF_FC_BSSID_KEY, bssid, 6);
+    prefs.putUChar(WIFI_PREF_FC_CHANNEL_KEY, channel);
+    prefs.end();
+    ESP_LOGI(TAG, "saved fast-connect cache: ssid='%s' ch=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x",
+             ssid, channel, bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+}
+
 static void wifi_clear_custom_profile() {
     Preferences prefs;
     if (!prefs.begin(WIFI_PREFS_NS, false)) {
@@ -173,7 +235,7 @@ static void wifi_clear_custom_profile() {
     ESP_LOGI(TAG, "cleared active custom profile");
 }
 
-static bool wifi_start_connection(const char* ssid, const char* password, bool custom_profile_active) {
+static bool wifi_start_connection(const char* ssid, const char* password, bool custom_profile_active, bool fresh_boot) {
     if (!g_wifi.store || !ssid || ssid[0] == '\0') {
         return false;
     }
@@ -187,14 +249,21 @@ static bool wifi_start_connection(const char* ssid, const char* password, bool c
     g_wifi.pause_reconnect_for_scan = false;
     store_set_wifi_profile(g_wifi.store, g_wifi.active_ssid, g_wifi.active_custom_profile);
 
-    ESP_LOGI(TAG, "connecting to SSID '%s' (%s profile)", ssid, custom_profile_active ? "custom" : "default");
+    ESP_LOGI(TAG, "connecting to SSID '%s' (%s profile%s)", ssid,
+             custom_profile_active ? "custom" : "default",
+             fresh_boot ? ", fresh boot" : "");
     store_set_wifi_connecting(g_wifi.store, true);
     store_set_wifi_connect_error(g_wifi.store, nullptr);
     store_set_wifi_state(g_wifi.store, ConnState::Initializing);
     store_set_wifi_connection_info(g_wifi.store, false, "", "", -127);
 
-    WiFi.disconnect(false, true);
-    delay(120);
+    // Skip the disconnect+delay on the boot path: nothing to disconnect
+    // from, and the eraseap=true wipes the AP record we want to keep so
+    // the driver can reuse cached BSSID/channel state.
+    if (!fresh_boot) {
+        WiFi.disconnect(false, false);
+        delay(120);
+    }
 
     // Apply static IP for the default profile when fully configured;
     // anything else (custom profile or missing fields) → DHCP. Calling
@@ -226,7 +295,21 @@ static bool wifi_start_connection(const char* ssid, const char* password, bool c
         WiFi.config(IPAddress(), IPAddress(), IPAddress());
     }
 
-    WiFi.begin(ssid, password ? password : "");
+    // On the boot path, try the cached BSSID/channel from the last
+    // successful association so WiFi.begin can skip the full-band scan.
+    // If the AP has moved channels or rotated BSSIDs, the chip will fall
+    // back to a scan on its own.
+    uint8_t cached_bssid[6] = {0};
+    uint8_t cached_channel = 0;
+    if (fresh_boot && wifi_load_fast_connect(ssid, cached_bssid, &cached_channel)) {
+        ESP_LOGI(TAG, "fast-connect: ch=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x",
+                 cached_channel,
+                 cached_bssid[0], cached_bssid[1], cached_bssid[2],
+                 cached_bssid[3], cached_bssid[4], cached_bssid[5]);
+        WiFi.begin(ssid, password ? password : "", cached_channel, cached_bssid, true);
+    } else {
+        WiFi.begin(ssid, password ? password : "");
+    }
     return true;
 }
 
@@ -438,7 +521,7 @@ void launch_wifi(Configuration* config, EntityStore* store) {
         ESP_LOGI(TAG, "received wifi event: %d", event);
 
         switch (event) {
-        case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+        case ARDUINO_EVENT_WIFI_STA_GOT_IP: {
             ESP_LOGI(TAG, "obtained IP address");
             g_wifi.consecutive_disconnects = 0;
             g_wifi.recovery_requested = false;
@@ -449,7 +532,13 @@ void launch_wifi(Configuration* config, EntityStore* store) {
             store_set_wifi_connecting(store, false);
             store_set_wifi_connect_error(store, nullptr);
             wifi_refresh_connection_info();
+            uint8_t* bssid = WiFi.BSSID();
+            int32_t channel = WiFi.channel();
+            if (bssid && channel >= 1 && channel <= 14 && g_wifi.active_ssid[0] != '\0') {
+                wifi_save_fast_connect(g_wifi.active_ssid, bssid, static_cast<uint8_t>(channel));
+            }
             break;
+        }
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
             const uint8_t reason = info.wifi_sta_disconnected.reason;
             const bool invalid_credentials = wifi_reason_invalid_credentials(reason);
@@ -529,12 +618,11 @@ void launch_wifi(Configuration* config, EntityStore* store) {
 
     WiFi.persistent(false);
     WiFi.mode(WIFI_STA);
-    WiFi.disconnect(false, true);
     WiFi.setAutoReconnect(true);
     WiFi.setSleep(WIFI_PS_MAX_MODEM);
     WiFi.setTxPower(WIFI_POWER_8_5dBm);
 
-    wifi_start_connection(boot_ssid, boot_password, use_custom_profile);
+    wifi_start_connection(boot_ssid, boot_password, use_custom_profile, /*fresh_boot=*/true);
     store_set_wifi_scan_state(store, false);
     wifi_refresh_connection_info();
 }
@@ -550,7 +638,7 @@ bool wifi_connect_to_network(const char* ssid, const char* password) {
 
     wifi_add_to_history(ssid, password ? password : "");
     wifi_save_custom_profile(ssid, password ? password : "");
-    return wifi_start_connection(ssid, password, true);
+    return wifi_start_connection(ssid, password, true, /*fresh_boot=*/false);
 }
 
 bool wifi_reset_to_default() {
@@ -559,7 +647,7 @@ bool wifi_reset_to_default() {
     }
 
     wifi_clear_custom_profile();
-    return wifi_start_connection(g_wifi.config->wifi_ssid, g_wifi.config->wifi_password, false);
+    return wifi_start_connection(g_wifi.config->wifi_ssid, g_wifi.config->wifi_password, false, /*fresh_boot=*/false);
 }
 
 bool wifi_reconnect() {
@@ -567,7 +655,7 @@ bool wifi_reconnect() {
         return false;
     }
     g_wifi.consecutive_disconnects = 0;
-    return wifi_start_connection(g_wifi.active_ssid, g_wifi.active_password, g_wifi.active_custom_profile);
+    return wifi_start_connection(g_wifi.active_ssid, g_wifi.active_password, g_wifi.active_custom_profile, /*fresh_boot=*/false);
 }
 
 void wifi_poll() {

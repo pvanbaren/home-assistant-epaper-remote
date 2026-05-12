@@ -194,6 +194,11 @@ void setup() {
     configure_remote(&config);
     store_load_persisted_media_device_idx(&store, config.media_device_count);
 
+    // Kick off Wi-Fi association early so it overlaps the e-paper init
+    // and first refresh below — association is mostly radio wait time and
+    // the panel init is mostly CPU/SPI, so the two pipeline cleanly.
+    launch_wifi(&config, &store);
+
     // Initialize display
     epaper.initPanel(DISPLAY_PANEL);
     epaper.setPanelSize(DISPLAY_HEIGHT, DISPLAY_WIDTH);
@@ -207,9 +212,6 @@ void setup() {
     ui_task_args.shared_state = &shared_ui_state;
     ui_task_args.config = &config;
     xTaskCreate(ui_task, "ui", 4096, &ui_task_args, 1, &store.ui_task);
-
-    // Connect to wifi and launch watcher
-    launch_wifi(&config, &store);
 
     // Connect to home assistant
     hass_task_args.config = &config;
