@@ -86,8 +86,12 @@ static void hass_probe(home_assistant_context* hass) {
     hass_map_response(hass, err, status);
 }
 
-// Takes ownership of service_data and frees it before returning.
-static void hass_post_service(home_assistant_context* hass, const char* domain, const char* service, cJSON* service_data) {
+// Takes ownership of service_data and frees it before returning. When
+// enqueued_ms is non-zero, transport errors retry every 200 ms until the
+// command's MEDIA_COMMAND_MAX_AGE_MS lifetime elapses or Wi-Fi drops —
+// masks brief TLS/TCP hiccups so the user doesn't see "lost connection"
+// for a one-off blip on an otherwise healthy network.
+static void hass_post_service(home_assistant_context* hass, const char* domain, const char* service, cJSON* service_data, uint32_t enqueued_ms = 0) {
     char path[128];
     int n = snprintf(path, sizeof(path), "/api/services/%s/%s", domain, service);
     if (n <= 0 || static_cast<size_t>(n) >= sizeof(path)) {
@@ -113,8 +117,35 @@ static void hass_post_service(home_assistant_context* hass, const char* domain, 
     esp_http_client_set_post_field(hass->client, body, strlen(body));
 
     ESP_LOGI(TAG, "POST %s body=%s", hass->url_buf, body);
-    esp_err_t err = esp_http_client_perform(hass->client);
-    int status = esp_http_client_get_status_code(hass->client);
+
+    esp_err_t err = ESP_FAIL;
+    int status = 0;
+    const bool retry_allowed = (enqueued_ms != 0);
+    while (true) {
+        err = esp_http_client_perform(hass->client);
+        status = esp_http_client_get_status_code(hass->client);
+
+        // Server responded (even with 4xx/5xx): transport is healthy, stop
+        // retrying — this is HA telling us something, not the network.
+        if (err == ESP_OK) break;
+        if (!retry_allowed) break;
+
+        const uint32_t now_ms = static_cast<uint32_t>(xTaskGetTickCount() * portTICK_PERIOD_MS);
+        if (now_ms - enqueued_ms >= MEDIA_COMMAND_MAX_AGE_MS) {
+            ESP_LOGW(TAG, "POST %s: command expired, giving up", hass->url_buf);
+            break;
+        }
+        // No point hammering retries over a dead radio — the Wi-Fi UI will
+        // surface its own disconnect screen.
+        const EventBits_t bits = xEventGroupGetBits(hass->store->event_group);
+        if (!(bits & BIT_WIFI_UP)) {
+            ESP_LOGW(TAG, "POST %s: Wi-Fi down, giving up", hass->url_buf);
+            break;
+        }
+        ESP_LOGW(TAG, "POST %s: transport err=%s, retrying in 200 ms", hass->url_buf, esp_err_to_name(err));
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+
     cJSON_free(body);
 
     if (err != ESP_OK || status >= 400) {
@@ -133,20 +164,20 @@ static void hass_send_command(home_assistant_context* hass, Command* cmd) {
     case CommandType::MediaVolumeUp: {
         cJSON* sd = cJSON_CreateObject();
         cJSON_AddStringToObject(sd, "entity_id", cmd->entity_id);
-        hass_post_service(hass, "media_player", "volume_up", sd);
+        hass_post_service(hass, "media_player", "volume_up", sd, cmd->enqueued_ms);
         break;
     }
     case CommandType::MediaVolumeDown: {
         cJSON* sd = cJSON_CreateObject();
         cJSON_AddStringToObject(sd, "entity_id", cmd->entity_id);
-        hass_post_service(hass, "media_player", "volume_down", sd);
+        hass_post_service(hass, "media_player", "volume_down", sd, cmd->enqueued_ms);
         break;
     }
     case CommandType::MediaVolumeMute: {
         cJSON* sd = cJSON_CreateObject();
         cJSON_AddStringToObject(sd, "entity_id", cmd->entity_id);
         cJSON_AddBoolToObject(sd, "is_volume_muted", true);
-        hass_post_service(hass, "media_player", "volume_mute", sd);
+        hass_post_service(hass, "media_player", "volume_mute", sd, cmd->enqueued_ms);
         break;
     }
     case CommandType::MediaSelectSource: {
@@ -157,7 +188,7 @@ static void hass_send_command(home_assistant_context* hass, Command* cmd) {
         cJSON* sd = cJSON_CreateObject();
         cJSON_AddStringToObject(sd, "entity_id", cmd->entity_id);
         cJSON_AddStringToObject(sd, "source", cmd->command_name);
-        hass_post_service(hass, "media_player", "select_source", sd);
+        hass_post_service(hass, "media_player", "select_source", sd, cmd->enqueued_ms);
         break;
     }
     case CommandType::RemoteSendCommand: {
@@ -168,7 +199,7 @@ static void hass_send_command(home_assistant_context* hass, Command* cmd) {
         cJSON* sd = cJSON_CreateObject();
         cJSON_AddStringToObject(sd, "entity_id", cmd->entity_id);
         cJSON_AddStringToObject(sd, "command", cmd->command_name);
-        hass_post_service(hass, "remote", "send_command", sd);
+        hass_post_service(hass, "remote", "send_command", sd, cmd->enqueued_ms);
         break;
     }
     case CommandType::CallService: {
@@ -180,7 +211,7 @@ static void hass_send_command(home_assistant_context* hass, Command* cmd) {
         if (cmd->action->entity_id) {
             cJSON_AddStringToObject(sd, "entity_id", cmd->action->entity_id);
         }
-        hass_post_service(hass, cmd->action->domain, cmd->action->service, sd);
+        hass_post_service(hass, cmd->action->domain, cmd->action->service, sd, cmd->enqueued_ms);
         break;
     }
     default:
