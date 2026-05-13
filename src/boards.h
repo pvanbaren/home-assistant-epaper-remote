@@ -12,6 +12,18 @@ constexpr size_t TOUCH_INT = 3;
 constexpr size_t TOUCH_RST = 9;
 constexpr int HOME_BUTTON_PIN = 0; // Front boot button
 constexpr bool HOME_BUTTON_ACTIVE_LOW = true;
+// Frontlight / backlight rail. Driven HIGH = on, LOW = off. Set to the
+// GPIO that controls the front LED on your board, or -1 to disable.
+constexpr int BACKLIGHT_PIN = 11;
+// PCA9535 GPIO expander INT line (the chip itself is owned by FastEPD's
+// BB_PANEL_EPDIY_V7 driver — we only listen on its INT to know when an
+// input bit we care about has flipped). Open-drain active-low. Set to
+// the SoC GPIO it's routed to, or -1 to disable.
+constexpr int IO_EXPANDER_INT_PIN = 38;
+// Side "IO48" button mapped to expander pin 10, active-low. Set to -1 to
+// disable. The per-bit log in loop() still fires regardless; this just
+// adds the named "IO48 button pressed" event and the backlight pulse.
+constexpr int EXPANDER_IO48_BIT = 10;
 constexpr int DISPLAY_PANEL = BB_PANEL_EPDIY_V7;
 // Battery sense: set BATTERY_ADC_PIN to the ADC GPIO that reads battery
 // voltage through the on-board divider (-1 disables the indicator).
@@ -39,6 +51,9 @@ constexpr size_t TOUCH_INT = 48;
 constexpr size_t TOUCH_RST = 0;
 constexpr int HOME_BUTTON_PIN = -1; // No dedicated front home button mapping
 constexpr bool HOME_BUTTON_ACTIVE_LOW = true;
+constexpr int BACKLIGHT_PIN = -1;
+constexpr int IO_EXPANDER_INT_PIN = -1;
+constexpr int EXPANDER_IO48_BIT = -1;
 constexpr int DISPLAY_PANEL = BB_PANEL_M5PAPERS3;
 // M5 Paper S3 reads battery via the AXP2101 PMU over I2C, not a direct ADC.
 // Leave BATTERY_ADC_PIN = -1 here; integrating AXP2101 is a separate driver.

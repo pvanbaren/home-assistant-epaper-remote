@@ -30,6 +30,20 @@ enum class SettingsMode : uint8_t {
     WifiPassword,
 };
 
+// Time-since-interaction phase. See thresholds in constants.h.
+enum class IdlePhase : uint8_t {
+    Active,    // backlight on
+    Dim,       // backlight off, UI mode unchanged
+    Standby,   // backlight off, UI shows standby placeholder
+    DeepSleep, // ready to enter ESP deep sleep
+};
+
+struct IdleSnapshot {
+    IdlePhase phase;
+    bool entered_standby; // edge: prev != Standby, current == Standby
+    bool left_standby;    // edge: prev == Standby, current != Standby
+};
+
 struct WifiNetwork {
     char ssid[MAX_WIFI_SSID_LEN];
     int16_t rssi;
@@ -95,9 +109,7 @@ struct EntityStore {
     bool wifi_password_shift = false;
 
     uint32_t last_interaction_ms = 0;
-    bool standby_active = false;
-    uint32_t standby_entered_ms = 0;
-    uint32_t standby_last_refresh_ms = 0;
+    IdlePhase last_idle_phase = IdlePhase::Active;
     uint32_t standby_revision = 0;
 
     bool battery_valid = false;
@@ -134,7 +146,6 @@ bool store_get_pending_command(EntityStore* store, Command* command); // pops fr
 bool store_go_home(EntityStore* store);
 bool store_open_wifi_settings(EntityStore* store);
 bool store_open_wifi_password(EntityStore* store, const char* ssid);
-bool store_open_standby(EntityStore* store, uint32_t now_ms);
 bool store_settings_back(EntityStore* store);
 bool store_close_settings(EntityStore* store);
 bool store_shift_wifi_list_page(EntityStore* store, int8_t delta);
@@ -152,9 +163,14 @@ void store_set_wifi_profile(EntityStore* store, const char* ssid, bool custom_pr
 void store_get_wifi_settings_snapshot(EntityStore* store, WifiSettingsSnapshot* snapshot);
 bool store_get_wifi_password_snapshot(EntityStore* store, WifiPasswordSnapshot* snapshot);
 void store_note_interaction(EntityStore* store, uint32_t now_ms);
-void store_poll_standby_timeout(EntityStore* store, uint32_t now_ms);
-bool store_is_standby_active(EntityStore* store);
-bool store_should_deep_sleep(EntityStore* store, uint32_t now_ms);
+uint32_t store_get_last_interaction_ms(EntityStore* store);
+// Single idle-phase poll. Compares time-since-interaction against the
+// thresholds in constants.h, applies network/settings gating (no
+// standby while wifi/HA is down or settings UI is open), updates the
+// store's cached phase, and returns the current phase plus
+// edge-transition flags. Call once per loop tick.
+IdleSnapshot store_poll_idle(EntityStore* store, uint32_t now_ms);
+bool store_is_standby_active(EntityStore* store); // == last_idle_phase == Standby
 void store_set_battery_state(EntityStore* store, bool valid, uint8_t soc_pct, uint16_t voltage_mv);
 bool store_get_battery_state(EntityStore* store, uint8_t* soc_pct_out, uint16_t* voltage_mv_out);
 void store_update_ui_state(EntityStore* store, UIState* ui_state);

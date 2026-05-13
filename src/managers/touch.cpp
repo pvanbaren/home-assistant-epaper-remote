@@ -948,11 +948,9 @@ void touch_task(void* arg) {
                 }
                 vTaskDelay(pdMS_TO_TICKS(TOUCH_RELEASE_POLL_MS));
             } else {
-                store_poll_standby_timeout(store, millis());
-                // Sleep until the touch INT ISR notifies us, or the standby
-                // timer needs another tick. 2 s is short enough to keep
-                // STANDBY_IDLE_TIMEOUT_MS resolution and long enough to let
-                // the SoC actually enter light sleep between events.
+                // Idle-phase polling lives in main.cpp's loop now, so this
+                // task just blocks on the touch INT ISR notification (with
+                // a 2 s safety timeout).
                 ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2000));
             }
         }

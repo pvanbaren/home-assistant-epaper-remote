@@ -33,9 +33,28 @@ static BatteryTaskArgs battery_task_args;
 
 static volatile TaskHandle_t s_main_task_handle = nullptr;
 static volatile bool s_home_button_pending = false;
+static volatile bool s_io_expander_pending = false;
+// Last-known IO48 button state (active-low on the expander). Tracked
+// across INT events so we only fire the named "pressed" / "released"
+// log on the actual edge.
+static bool s_io48_pressed = false;
+// Whether the backlight follows the IdlePhase::Active level automatically.
+// Toggled by the IO48 button. When false, backlight stays LOW regardless
+// of activity. Defaults off on boot so the panel stays dark until the
+// user opts in via the IO48 side button.
+static bool s_backlight_auto_on = false;
 
 static void IRAM_ATTR home_button_isr() {
     s_home_button_pending = true;
+    if (s_main_task_handle) {
+        BaseType_t hpw = pdFALSE;
+        vTaskNotifyGiveFromISR(s_main_task_handle, &hpw);
+        portYIELD_FROM_ISR(hpw);
+    }
+}
+
+static void IRAM_ATTR io_expander_int_isr() {
+    s_io_expander_pending = true;
     if (s_main_task_handle) {
         BaseType_t hpw = pdFALSE;
         vTaskNotifyGiveFromISR(s_main_task_handle, &hpw);
@@ -181,6 +200,36 @@ void setup() {
 #endif
     }
 
+    if (BACKLIGHT_PIN >= 0) {
+        // Frontlight starts off; HOME button press (loop()) turns it on
+        // for a fixed window.
+        pinMode(BACKLIGHT_PIN, OUTPUT);
+        digitalWrite(BACKLIGHT_PIN, LOW);
+    }
+
+    // Drain any pending PCA9535 INT condition before attachInterrupt arms
+    // the FALLING edge. The PCA9535 only clears INT for the input port
+    // whose register is read, so we read both ports — the IO48 pin (10)
+    // is on port 1 and any other input change would be on port 0. We go
+    // through epaper.ioRead so FastEPD's cached register state stays
+    // consistent (FastEPD also owns several output bits on this chip).
+    if (EXPANDER_IO48_BIT >= 0) {
+        // PCA9535 power-on default already has every pin as an input and
+        // FastEPD's EPDiyV7IOInit only flips the panel-control bits to
+        // outputs, so this is conceptually a no-op — but make the intent
+        // explicit. ioPinMode does an atomic single-bit update of FastEPD's
+        // cached config register, so it won't clobber the panel outputs.
+        epaper.ioPinMode(EXPANDER_IO48_BIT, INPUT);
+        const uint8_t io48_level = epaper.ioRead(EXPANDER_IO48_BIT);
+        epaper.ioRead(0); // drain the other port
+        s_io48_pressed = (io48_level == 0);
+        ESP_LOGI(TAG, "IOExp baseline: IO48 = %d", io48_level);
+    }
+    if (IO_EXPANDER_INT_PIN >= 0) {
+        pinMode(IO_EXPANDER_INT_PIN, INPUT_PULLUP); // INT is open-drain active-low
+        attachInterrupt(digitalPinToInterrupt(IO_EXPANDER_INT_PIN), io_expander_int_isr, FALLING);
+    }
+
 #if defined(ENABLE_PM_LIGHT_SLEEP)
     // Allow GPIO interrupts (touch INT, home button) to wake the SoC from
     // automatic light sleep. Per-pin level config is set where each pin is
@@ -191,8 +240,8 @@ void setup() {
 }
 
 void loop() {
-    // Block until either the 1 s housekeeping tick elapses or an ISR (home button)
-    // wakes us. This lets the chip enter light sleep instead of busy-polling.
+    // 1 s housekeeping tick. ISRs (home button) and store notifications
+    // still wake us early.
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
 
     wifi_poll();
@@ -200,12 +249,80 @@ void loop() {
     if (s_home_button_pending) {
         s_home_button_pending = false;
         ESP_LOGI(TAG, "Home button pressed");
+        store_note_interaction(&store, millis());
         store_go_home(&store);
     }
 
+    if (s_io_expander_pending) {
+        s_io_expander_pending = false;
+        if (EXPANDER_IO48_BIT >= 0) {
+            // Read IO48 (port 1) and drain port 0 — PCA9535 only clears
+            // INT for the port whose register is read, so we have to
+            // touch both or INT stays asserted and the next FALLING edge
+            // never fires.
+            const uint8_t io48_level = epaper.ioRead(EXPANDER_IO48_BIT);
+            epaper.ioRead(0);
+            const bool now_pressed = (io48_level == 0); // active-low
+            if (now_pressed != s_io48_pressed) {
+                s_io48_pressed = now_pressed;
+                if (now_pressed) {
+                    // Age tells us whether the backlight is currently in
+                    // its Active pulse: if last interaction was within
+                    // BACKLIGHT_PULSE_MS, the pulse is live (light is on
+                    // when auto-mode is enabled). The press itself is
+                    // noted as activity below, so the same idle tick will
+                    // drive the panel HIGH whenever auto-mode is on.
+                    const uint32_t now = millis();
+                    const uint32_t age = now - store_get_last_interaction_ms(&store);
+                    if (age > BACKLIGHT_PULSE_MS) {
+                        // Past the pulse window — the press is a "wake"
+                        // gesture, not a mode toggle. Make sure auto-mode
+                        // is on so the panel actually lights up; the
+                        // interaction note below does the rest.
+                        if (!s_backlight_auto_on) {
+                            s_backlight_auto_on = true;
+                            ESP_LOGI(TAG, "IO48 pressed; backlight auto-mode ENABLED (wake)");
+                        } else {
+                            ESP_LOGI(TAG, "IO48 pressed; waking backlight (auto-mode still ENABLED)");
+                        }
+                    } else {
+                        // Inside the pulse window — toggle auto-mode so
+                        // the user can turn the light off (or on, if a
+                        // prior press disabled it during the same window).
+                        s_backlight_auto_on = !s_backlight_auto_on;
+                        ESP_LOGI(TAG, "IO48 pressed; backlight auto-mode %s",
+                                 s_backlight_auto_on ? "ENABLED" : "DISABLED");
+                    }
+                    // Treat the press itself as activity so the standby
+                    // timer slides forward and (when auto-mode is on)
+                    // the next idle poll lights up the panel.
+                    store_note_interaction(&store, now);
+                } else {
+                    ESP_LOGI(TAG, "IO48 button released");
+                }
+            }
+        } else {
+            // No IO48 mapping but INT fired — drain both ports so the
+            // line releases for the next edge.
+            epaper.ioRead(0);
+            epaper.ioRead(8);
+        }
+    }
+
+    // Single idle-phase poll drives everything time-related: backlight
+    // level, standby UI mode, deep-sleep entry. Phase is computed from
+    // store->last_interaction_ms with network/settings gating applied
+    // inside the store.
+    const IdleSnapshot idle = store_poll_idle(&store, millis());
+
+    if (BACKLIGHT_PIN >= 0) {
+        const bool want_on = s_backlight_auto_on && idle.phase == IdlePhase::Active;
+        digitalWrite(BACKLIGHT_PIN, want_on ? HIGH : LOW);
+    }
+
 #if defined(ENABLE_DEEP_SLEEP_STANDBY)
-    if (store_should_deep_sleep(&store, millis())) {
-        ESP_LOGI(TAG, "Standby timeout reached, entering deep sleep");
+    if (idle.phase == IdlePhase::DeepSleep) {
+        ESP_LOGI(TAG, "Idle timeout reached, entering deep sleep");
         enter_deep_sleep();
     }
 #endif

@@ -38,7 +38,7 @@ void store_init(EntityStore* store) {
     store->mutex = xSemaphoreCreateMutex();
     store->event_group = xEventGroupCreate();
     store->last_interaction_ms = static_cast<uint32_t>(xTaskGetTickCount() * portTICK_PERIOD_MS);
-    store->standby_last_refresh_ms = store->last_interaction_ms;
+    store->last_idle_phase = IdlePhase::Active;
 }
 
 void store_set_wifi_state(EntityStore* store, ConnState state) {
@@ -149,8 +149,11 @@ bool store_go_home(EntityStore* store) {
         store->settings_revision++;
         changed = true;
     }
-    if (store->standby_active) {
-        store->standby_active = false;
+    if (store->last_idle_phase == IdlePhase::Standby) {
+        // Force the cached phase off Standby so store_poll_idle sees a
+        // fresh transition on the next tick; standby_revision++ also
+        // bumps the UI's standby delta so the panel repaints.
+        store->last_idle_phase = IdlePhase::Active;
         store->standby_revision++;
         changed = true;
     }
@@ -201,28 +204,6 @@ bool store_open_wifi_password(EntityStore* store, const char* ssid) {
     xSemaphoreGive(store->mutex);
     notify_ui(store);
     return true;
-}
-
-bool store_open_standby(EntityStore* store, uint32_t now_ms) {
-    xSemaphoreTake(store->mutex, portMAX_DELAY);
-    const bool can_activate = store->wifi == ConnState::Up && store->home_assistant == ConnState::Up;
-    const bool was_standby = store->standby_active;
-    const bool changed = can_activate && (!store->standby_active || store->settings_mode != SettingsMode::None);
-    if (changed) {
-        store->settings_mode = SettingsMode::None;
-        store->standby_active = true;
-        if (!was_standby) {
-            store->standby_entered_ms = now_ms;
-        }
-        store->standby_last_refresh_ms = now_ms;
-        store->standby_revision++;
-        store->settings_revision++;
-    }
-    xSemaphoreGive(store->mutex);
-    if (changed) {
-        notify_ui(store);
-    }
-    return changed;
 }
 
 bool store_settings_back(EntityStore* store) {
@@ -514,56 +495,64 @@ void store_note_interaction(EntityStore* store, uint32_t now_ms) {
     xSemaphoreGive(store->mutex);
 }
 
-void store_poll_standby_timeout(EntityStore* store, uint32_t now_ms) {
+uint32_t store_get_last_interaction_ms(EntityStore* store) {
+    xSemaphoreTake(store->mutex, portMAX_DELAY);
+    const uint32_t result = store->last_interaction_ms;
+    xSemaphoreGive(store->mutex);
+    return result;
+}
+
+IdleSnapshot store_poll_idle(EntityStore* store, uint32_t now_ms) {
     xSemaphoreTake(store->mutex, portMAX_DELAY);
 
-    const bool can_activate = store->settings_mode == SettingsMode::None && store->wifi == ConnState::Up &&
-                              store->home_assistant == ConnState::Up;
-    const bool idle_timed_out = static_cast<uint32_t>(now_ms - store->last_interaction_ms) >= STANDBY_IDLE_TIMEOUT_MS;
-    bool changed = false;
-    bool entered_standby = false;
-    bool left_standby = false;
+    const uint32_t age = static_cast<uint32_t>(now_ms - store->last_interaction_ms);
+    const bool net_up = store->wifi == ConnState::Up && store->home_assistant == ConnState::Up;
+    const bool settings_open = store->settings_mode != SettingsMode::None;
+    const bool can_idle = net_up && !settings_open;
 
-    if (store->standby_active) {
-        if (!can_activate) {
-            store->standby_active = false;
+    IdlePhase phase;
+    if (age < BACKLIGHT_PULSE_MS) {
+        phase = IdlePhase::Active;
+    } else if (!can_idle || age < STANDBY_IDLE_TIMEOUT_MS) {
+        // Backlight off but UI mode unchanged. Without network or with
+        // settings open we cap here — Standby would hide the actual
+        // screen the user needs to see.
+        phase = IdlePhase::Dim;
+    } else if (age < DEEP_SLEEP_IDLE_TIMEOUT_MS) {
+        phase = IdlePhase::Standby;
+    } else {
+        phase = IdlePhase::DeepSleep;
+    }
+
+    const IdlePhase prev = store->last_idle_phase;
+    const bool entered_standby = (phase == IdlePhase::Standby) && (prev != IdlePhase::Standby);
+    const bool left_standby = (prev == IdlePhase::Standby) && (phase != IdlePhase::Standby);
+
+    if (phase != prev) {
+        store->last_idle_phase = phase;
+        if (entered_standby || left_standby) {
             store->standby_revision++;
-            changed = true;
-            left_standby = true;
         }
-    } else if (can_activate && idle_timed_out) {
-        store->standby_active = true;
-        store->standby_entered_ms = now_ms;
-        store->standby_last_refresh_ms = now_ms;
-        store->standby_revision++;
-        changed = true;
-        entered_standby = true;
     }
 
     xSemaphoreGive(store->mutex);
+
     if (entered_standby) {
         ESP_LOGI(TAG, "Idle timeout reached, entering standby");
+        notify_ui(store);
     } else if (left_standby) {
-        ESP_LOGI(TAG, "Connection dropped, leaving standby");
-    }
-    if (changed) {
+        ESP_LOGI(TAG, "Leaving standby");
         notify_ui(store);
     }
+
+    return IdleSnapshot{phase, entered_standby, left_standby};
 }
 
 bool store_is_standby_active(EntityStore* store) {
     xSemaphoreTake(store->mutex, portMAX_DELAY);
-    const bool active = store->standby_active;
+    const bool active = store->last_idle_phase == IdlePhase::Standby;
     xSemaphoreGive(store->mutex);
     return active;
-}
-
-bool store_should_deep_sleep(EntityStore* store, uint32_t now_ms) {
-    xSemaphoreTake(store->mutex, portMAX_DELAY);
-    const bool should = store->standby_active &&
-                        static_cast<uint32_t>(now_ms - store->standby_entered_ms) >= DEEP_SLEEP_AFTER_STANDBY_MS;
-    xSemaphoreGive(store->mutex);
-    return should;
 }
 
 void store_set_battery_state(EntityStore* store, bool valid, uint8_t soc_pct, uint16_t voltage_mv) {
@@ -631,7 +620,7 @@ void store_update_ui_state(EntityStore* store, UIState* ui_state) {
             ui_state->mode = UiMode::WifiSettings;
             break;
         }
-    } else if (store->standby_active) {
+    } else if (store->last_idle_phase == IdlePhase::Standby) {
         ui_state->mode = UiMode::Standby;
     } else if (store->wifi == ConnState::InvalidCredentials || store->wifi == ConnState::ConnectionError) {
         ui_state->mode = UiMode::WifiDisconnected;

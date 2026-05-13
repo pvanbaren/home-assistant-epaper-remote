@@ -35,9 +35,15 @@ constexpr uint32_t TOUCH_RELEASE_POLL_MS = 5;
 constexpr uint32_t DISPLAY_FULL_REDRAW_TIMEOUT_MS = 15000;
 constexpr uint8_t DISPLAY_PARTIAL_UPDATE_PASSES = 2;
 constexpr uint8_t DISPLAY_FULL_UPDATE_PASSES = 4;
-constexpr uint32_t STANDBY_IDLE_TIMEOUT_MS = 60000;       // 1 minute
-constexpr uint32_t DEEP_SLEEP_AFTER_STANDBY_MS = 300000;  // 5 minutes
-constexpr uint32_t BATTERY_REFRESH_INTERVAL_MS = 20000;   // 20 s between battery samples
+// Idle phases, all measured as time since last_interaction_ms:
+//   0 .. BACKLIGHT_PULSE_MS              → Active (backlight on)
+//   .. STANDBY_IDLE_TIMEOUT_MS           → Dim    (backlight off, UI active)
+//   .. DEEP_SLEEP_IDLE_TIMEOUT_MS        → Standby
+//   beyond                               → DeepSleep
+constexpr uint32_t BACKLIGHT_PULSE_MS = 10 * 1000;          // frontlight on for 10 s after each user interaction
+constexpr uint32_t STANDBY_IDLE_TIMEOUT_MS = 60 * 1000;     // 1 minute total idle → Standby
+constexpr uint32_t DEEP_SLEEP_IDLE_TIMEOUT_MS = 600 * 1000; // 10 minute total idle → DeepSleep
+constexpr uint32_t BATTERY_REFRESH_INTERVAL_MS = 20 * 1000; // 20 s between battery samples
 constexpr uint16_t BATTERY_FULL_MV = 4200;
 constexpr uint16_t BATTERY_EMPTY_MV = 3300;
 
