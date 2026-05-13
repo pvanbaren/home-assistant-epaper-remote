@@ -250,7 +250,17 @@ void home_assistant_task(void* arg) {
     // trust is still verified against root_ca; only the SAN/CN match
     // against the host string is skipped.
     cfg.skip_cert_common_name_check = true;
+    // Reuse the TCP+TLS session across requests (Connection: keep-alive on
+    // the wire). Without explicit timing, lwIP defaults to TCP_KEEPIDLE=7200
+    // s / TCP_KEEPINTVL=75 s, so a dead peer can sit undetected for two
+    // hours. Probe after 10 s idle, every 5 s, give up after 3 failures —
+    // a stale connection surfaces within ~25 s of going bad, and probes
+    // only fire when no real traffic has flowed (so active remote use
+    // doesn't pay the keepalive radio cost).
     cfg.keep_alive_enable = true;
+    cfg.keep_alive_idle = 10;
+    cfg.keep_alive_interval = 5;
+    cfg.keep_alive_count = 3;
     cfg.timeout_ms = 5000;
 
     hass->client = esp_http_client_init(&cfg);

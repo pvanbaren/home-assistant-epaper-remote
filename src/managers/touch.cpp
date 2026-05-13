@@ -515,6 +515,9 @@ void touch_task(void* arg) {
     bool touching = false;
     bool swallow_touch_release = false;
     uint32_t last_touch_ms = 0;
+    // Latched at the !touching → touching transition so the touchpad
+    // tap-on-hold path can measure how long the contact has been held.
+    uint32_t touch_start_ms = 0;
     uint32_t standby_touch_ignore_until_ms = 0;
     // Auto-repeat: when a held button supports it (volume), retrigger every
     // AUTOREPEAT_INTERVAL_MS until release. None disables.
@@ -594,6 +597,9 @@ void touch_task(void* arg) {
         }
 
         if (bbct->getSamples(&ti)) {
+            if (!touching) {
+                touch_start_ms = now_ms;
+            }
             last_touch_ms = now_ms;
             store_note_interaction(store, last_touch_ms);
             ui_state_copy(ctx->state, &ui_state_version, ui_state);
@@ -732,7 +738,7 @@ void touch_task(void* arg) {
                             media_dispatch_button(store, config, action);
                             swallow_touch_release = true;
                         } else if (static_cast<uint32_t>(now_ms - touch_start_ms) >= TOUCHPAD_TAP_HOLD_MS) {
-                            media_dispatch_button(store, config, MediaButton::DpadOk, touch_start_ms);
+                            media_dispatch_button(store, config, MediaButton::DpadOk);
                             swallow_touch_release = true;
                         }
                     }
