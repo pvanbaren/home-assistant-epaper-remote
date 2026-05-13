@@ -715,7 +715,9 @@ void touch_task(void* arg) {
                     // user to lift. swallow_touch_release doubles as the
                     // "already fired" latch so we don't re-dispatch on every
                     // sample after the threshold is crossed, and so the release
-                    // path skips its own swipe/tap dispatch.
+                    // path skips its own swipe/tap dispatch. If no swipe occurs
+                    // within TOUCHPAD_TAP_HOLD_MS, treat the press as a tap and
+                    // fire DpadOk immediately rather than waiting for finger lift.
                     if (!swallow_touch_release &&
                         media_button_from_touch(&touch_start) == MediaButton::Touchpad) {
                         constexpr int16_t SWIPE_THRESHOLD = 5;
@@ -728,6 +730,9 @@ void touch_task(void* arg) {
                                 ? (dx > 0 ? MediaButton::DpadRight : MediaButton::DpadLeft)
                                 : (dy > 0 ? MediaButton::DpadDown : MediaButton::DpadUp);
                             media_dispatch_button(store, config, action);
+                            swallow_touch_release = true;
+                        } else if (static_cast<uint32_t>(now_ms - touch_start_ms) >= TOUCHPAD_TAP_HOLD_MS) {
+                            media_dispatch_button(store, config, MediaButton::DpadOk, touch_start_ms);
                             swallow_touch_release = true;
                         }
                     }

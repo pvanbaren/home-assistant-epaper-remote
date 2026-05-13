@@ -36,6 +36,10 @@ constexpr size_t MAX_WIFI_ERROR_LEN = 64;
 constexpr uint32_t WIFI_BOOT_SETTINGS_FALLBACK_MS = 7000;
 constexpr uint32_t TOUCH_RELEASE_TIMEOUT_MS = 80;
 constexpr uint32_t TOUCH_RELEASE_POLL_MS = 5;
+// Hold time after which a still-pressed touchpad contact fires DpadOk
+// without waiting for finger lift. Anything below this still goes through
+// the release-edge tap path so a brisk tap-and-lift still registers.
+constexpr uint32_t TOUCHPAD_TAP_HOLD_MS = 120;
 constexpr uint32_t DISPLAY_FULL_REDRAW_TIMEOUT_MS = 15000;
 constexpr uint8_t DISPLAY_PARTIAL_UPDATE_PASSES = 2;
 constexpr uint8_t DISPLAY_FULL_UPDATE_PASSES = 4;
